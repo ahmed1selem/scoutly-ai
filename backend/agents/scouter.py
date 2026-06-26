@@ -232,6 +232,8 @@ class ScouterAgent(BaseAgent):
         # ── Step 7: Web search for form/injuries ──────────────────────────────
         if players:
             from ..tools.web_search import web_search as _ws
+
+            # ── 7a: Form & injury news ────────────────────────────────────────
             await self.emit_progress(f"Web search: form & injury news for {len(players)} candidates...")
             for p in players:
                 try:
@@ -239,6 +241,64 @@ class ScouterAgent(BaseAgent):
                     p["scout_note"] = (p.get("scout_note", "") + "\n" + str(note))[:600]
                 except Exception:
                     pass
+
+            # ── 7b: Real financial data (wages + market values) ───────────────
+            await self.emit_progress("Fetching real wages and market values from web...")
+            for p in players:
+                name = p.get("name", "")
+                squad = p.get("squad", "")
+                try:
+                    # Wage search
+                    wage_result = await _ws.ainvoke(
+                        f"{name} {squad} weekly wage salary 2024 2025 EUR"
+                    )
+                    wage_text = str(wage_result)
+
+                    # Market value search
+                    val_result = await _ws.ainvoke(
+                        f"{name} transfermarkt market value 2025"
+                    )
+                    val_text = str(val_result)
+
+                    # Try to extract numbers from results using LLM
+                    extract_resp = await self.client.chat.completions.create(
+                        model=settings.OPENAI_MODEL,
+                        messages=[{"role": "user", "content": (
+                            f"Extract financial data for {name} from these search results.\n\n"
+                            f"WAGE RESULTS:\n{wage_text[:800]}\n\n"
+                            f"MARKET VALUE RESULTS:\n{val_text[:800]}\n\n"
+                            "Return ONLY JSON with keys: "
+                            "wage_eur_per_week (int, EUR, null if unknown), "
+                            "market_value_eur (int, EUR, null if unknown), "
+                            "financial_source (str, where the data came from). "
+                            "Convert GBP to EUR (×1.18), convert millions to full numbers."
+                        )}],
+                        response_format={"type": "json_object"},
+                        temperature=0.0,
+                        max_tokens=100,
+                    )
+                    fin_data = json.loads(extract_resp.choices[0].message.content)
+
+                    # Only override wage if we found a real figure (not the league estimate)
+                    if fin_data.get("wage_eur_per_week") and fin_data["wage_eur_per_week"] > 10000:
+                        p["wage_eur"] = fin_data["wage_eur_per_week"]
+                        p["wage_estimated"] = False
+                        p["wage_source"] = fin_data.get("financial_source", "web search")
+
+                    if fin_data.get("market_value_eur") and fin_data["market_value_eur"] > 1_000_000:
+                        p["value_eur"] = fin_data["market_value_eur"]
+                        p["value_source"] = fin_data.get("financial_source", "web search")
+
+                    await self.emit_progress(
+                        f"  {name}: wage=€{p.get('wage_eur',0):,}/wk "
+                        f"({'real' if not p.get('wage_estimated', True) else 'est.'}) | "
+                        f"value=€{p.get('value_eur', 0)/1_000_000:.0f}M"
+                        if p.get('value_eur') else
+                        f"  {name}: wage=€{p.get('wage_eur',0):,}/wk "
+                        f"({'real' if not p.get('wage_estimated', True) else 'est.'})"
+                    )
+                except Exception:
+                    pass  # keep league estimate if search fails
 
         await self.emit_complete(f"Shortlisted {len(players)} verified players from database")
         return {"players": players}
