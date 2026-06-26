@@ -6,7 +6,19 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator
 
 from openai import AsyncAzureOpenAI
-from deepagents import create_deep_agent
+
+# deepagents requires a custom LangChain fork — import is protected so the
+# app starts even on environments with standard LangChain (e.g. Fly.io).
+try:
+    from deepagents import create_deep_agent
+    _DEEPAGENTS_OK = True
+except Exception as _da_err:
+    create_deep_agent = None
+    _DEEPAGENTS_OK = False
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "deepagents unavailable (%s) — agent pipeline will run in fallback mode", _da_err
+    )
 
 from ..utils.prompt_loader import PromptLoader
 from ..utils.config import settings, get_langchain_azure_llm
@@ -79,6 +91,11 @@ class BaseAgent(ABC):
         Run a deep agent loop with streaming SSE emission.
         Returns the final string output of the agent.
         """
+        if not _DEEPAGENTS_OK:
+            raise RuntimeError(
+                "deepagents is not available in this environment. "
+                "Ensure the full dependency stack (langchain-anthropic fork) is installed."
+            )
         llm = get_langchain_azure_llm()
         agent = create_deep_agent(
             model=llm,
