@@ -19,7 +19,21 @@ from typing import Any
 from openai import AzureOpenAI
 from langchain_openai import AzureChatOpenAI
 from langchain_core.tools import tool
-from deepagents import create_deep_agent
+
+# deepagents requires a custom LangChain fork not on PyPI — import is optional.
+# If unavailable the LLM chart-generation step is skipped gracefully;
+# guaranteed charts (chart_generator.py) still run via PDFGenerator.
+try:
+    from deepagents import create_deep_agent as _create_deep_agent
+    _DEEPAGENTS_OK = True
+except Exception as _da_err:  # ImportError or anything from the custom-fork imports
+    _create_deep_agent = None
+    _DEEPAGENTS_OK = False
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "deepagents unavailable (%s) — LLM chart generation disabled; "
+        "guaranteed charts will still be produced.", _da_err
+    )
 
 from ..utils.config import settings
 from ..utils.prompt_loader import PromptLoader
@@ -210,9 +224,19 @@ class AnalysisAgent:
 
         chart_dir = str(settings.CHARTS_DIR / run_id)
 
+        # If deepagents is unavailable, skip LLM chart generation entirely.
+        # The PDFGenerator's guaranteed charts (chart_generator.py) still run.
+        if not _DEEPAGENTS_OK:
+            await self.emit_progress(
+                "LLM chart generation skipped (deepagents unavailable) — "
+                "guaranteed charts will be produced by the PDF generator."
+            )
+            await self.emit_complete("Analysis skipped — guaranteed charts active")
+            return {"charts": [], "player_reports": {}, "unified_report": ""}
+
         # Build the deep agent
         llm = _azure_llm()
-        agent = create_deep_agent(
+        agent = _create_deep_agent(
             model=llm,
             tools=[run_python_script, describe_image, list_files],
             system_prompt=PromptLoader.get("analysis"),
