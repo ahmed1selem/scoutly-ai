@@ -32,7 +32,8 @@ class FinancialAgent(BaseAgent):
         await self.emit_start("Reading club financial plan and calculating salary thresholds...")
 
         plan = self._load_financial_plan()
-        await self.emit_progress(f"Financial plan loaded for {plan.get('team', {}).get('name', 'Unknown')}")
+        target_club_name = getattr(self, "target_club", "the target club")
+        await self.emit_progress(f"Financial plan loaded and evaluating budget for {target_club_name}")
 
         plan_json = json.dumps(plan, indent=2)
 

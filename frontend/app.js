@@ -36,6 +36,28 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function formatMessageWithCards(msg) {
+  if (!msg) return '';
+  
+  const jsonStart = msg.indexOf('[');
+  const jsonEnd = msg.lastIndexOf(']');
+  if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+    try {
+      const potentialJson = msg.substring(jsonStart, jsonEnd + 1);
+      const parsed = JSON.parse(potentialJson);
+      if (Array.isArray(parsed) && parsed.length > 0 && (parsed[0].rank !== undefined || parsed[0].tactical_fit_score !== undefined || parsed[0].name !== undefined)) {
+        let textBefore = msg.substring(0, jsonStart).replace(/```json\s*/g, '').replace(/```\s*/g, '');
+        let textAfter = msg.substring(jsonEnd + 1).replace(/```\s*/g, '');
+        return escapeHtml(textBefore) + `<div class="chat-shortlist" style="margin-top: 12px; margin-bottom: 12px;">${renderPlayerCardsHtml(parsed)}</div>` + escapeHtml(textAfter);
+      }
+    } catch (e) {
+      // Fallback
+    }
+  }
+  
+  return escapeHtml(msg);
+}
+
 function clearActivity() {
   const feed = document.getElementById('activityFeed');
   feed.innerHTML = `
@@ -98,9 +120,13 @@ function renderEvent(event) {
   // Format optional data preview
   let dataHtml = '';
   if (event.data && typeof event.data === 'object') {
-    const preview = JSON.stringify(event.data, null, 2);
-    if (preview.length < 2000) {
-      dataHtml = `<div class="event-data">${escapeHtml(preview)}</div>`;
+    if (Array.isArray(event.data) && event.data.length > 0 && (event.data[0].rank !== undefined || event.data[0].tactical_fit_score !== undefined || event.data[0].name !== undefined)) {
+      dataHtml = `<div style="margin-top: 12px;">${renderPlayerCardsHtml(event.data)}</div>`;
+    } else {
+      const preview = JSON.stringify(event.data, null, 2);
+      if (preview.length < 2000) {
+        dataHtml = `<div class="event-data">${escapeHtml(preview)}</div>`;
+      }
     }
   } else if (event.error) {
     dataHtml = `<div class="event-data" style="color: var(--red);">${escapeHtml(event.error)}</div>`;
@@ -118,7 +144,7 @@ function renderEvent(event) {
         <span class="event-type-badge ${badgeClass}">${badgeLabel}</span>
         <span class="event-timestamp">${ts}</span>
       </div>
-      <div class="event-message">${escapeHtml(event.message || '')}</div>
+      <div class="event-message">${formatMessageWithCards(event.message)}</div>
       ${dataHtml}
     </div>`;
 
@@ -263,9 +289,9 @@ function handleEvent(event) {
 
   // Handle Debate states
   if (type === 'draft_ready' || type === 'revision_ready') {
-    appendChatBubble('system', `I've found the following candidates based on your requirements:<div class="chat-shortlist">${JSON.stringify(event.ranked_players, null, 2)}</div>`);
+    appendChatBubble('system', `I've found the following candidates based on your requirements:<div class="chat-shortlist">${renderPlayerCardsHtml(event.ranked_players)}</div>`);
   } else if (type === 'chat_message') {
-    appendChatBubble(event.sender || 'system', event.message);
+    appendChatBubble(event.sender || 'system', formatMessageWithCards(event.message));
   } else if (type === 'awaiting_review') {
     document.getElementById('debatePanel').style.display = 'block';
     document.getElementById('debatePanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -367,3 +393,58 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// ── Player Card Renderer ──────────────────────────────────────────────────────
+
+function renderPlayerCardsHtml(players) {
+  if (!players || players.length === 0) return '<p>No players found.</p>';
+  
+  let html = '<div class="player-cards-container">';
+  players.forEach((p, idx) => {
+    const goals = p.raw_metrics?.goals?.value || 0;
+    const assists = p.raw_metrics?.assists?.value || 0;
+    const xg = p.raw_metrics?.xg?.value || 0;
+    const fitScore = p.tactical_fit_score !== undefined ? p.tactical_fit_score : '?';
+    
+    html += `
+      <details class="player-card">
+        <summary class="player-card-header">
+          <div class="player-card-title">
+            <span class="player-rank">#${p.rank || idx + 1}</span>
+            <span class="player-name">${escapeHtml(p.name || 'Unknown')}</span>
+            <span class="player-club">${escapeHtml(p.squad || 'Unknown')} (${p.age || '?'})</span>
+          </div>
+          <div class="player-card-score">Fit: ${fitScore}/100</div>
+        </summary>
+        <div class="player-card-body">
+          <div class="player-stats-grid">
+            <div class="stat-box"><strong>Goals:</strong> ${goals}</div>
+            <div class="stat-box"><strong>Assists:</strong> ${assists}</div>
+            <div class="stat-box"><strong>xG:</strong> ${xg}</div>
+            <div class="stat-box"><strong>Minutes:</strong> ${p.minutes || 0}</div>
+          </div>
+          
+          <div class="player-analysis">
+            <h4>Tactical Verdict</h4>
+            <p>${escapeHtml(p.tactical_verdict || 'No verdict provided.')}</p>
+            
+            <div class="sw-grid">
+              <div class="strengths">
+                <h5>Strengths</h5>
+                <ul>${(p.strengths || []).map(s => `<li>${escapeHtml(s)}</li>`).join('') || '<li>None</li>'}</ul>
+              </div>
+              <div class="weaknesses">
+                <h5>Weaknesses</h5>
+                <ul>${(p.weaknesses || []).map(w => `<li>${escapeHtml(w)}</li>`).join('') || '<li>None</li>'}</ul>
+              </div>
+            </div>
+            
+            ${p.scout_note ? `<h4>Scout Note</h4><p>${escapeHtml(p.scout_note)}</p>` : ''}
+          </div>
+        </div>
+      </details>
+    `;
+  });
+  html += '</div>';
+  return html;
+}

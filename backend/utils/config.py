@@ -59,7 +59,7 @@ class Settings:
 
     # ── MCP Server ─────────────────────────────────────────────────────────────
     MCP_SERVER_HOST: str = os.getenv("MCP_SERVER_HOST", "localhost")
-    MCP_SERVER_PORT: int = int(os.getenv("MCP_SERVER_PORT", "8001"))
+    MCP_SERVER_PORT: int = int(os.getenv("MCP_SERVER_PORT", "8005"))
 
     @property
     def MCP_SERVER_URL(self) -> str:

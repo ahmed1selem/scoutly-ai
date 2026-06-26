@@ -1,23 +1,9 @@
-team:
-  name: "Scoutly FC"
-  season: "2024/25"
-  total_transfer_budget_eur: 150000000      # €150M total transfer window budget
-  current_wage_bill_eur_weekly: 1200000     # Current weekly wage bill
-  max_wage_bill_eur_weekly: 2000000         # Hard cap on weekly wages
-
-# Per-position maximum weekly salary (EUR)
-# These are SYSTEM defaults — the user's query overrides them when specified.
-position_salary_caps:
-  ST:  250000
-  LW:  200000
-  RW:  200000
-  CAM: 180000
-  CM:  160000
-  CDM: 150000
-  CB:  150000
-  LB:  130000
-  RB:  130000
-  GK:  120000
+# Generic Default Negotiation Rules
+# The specific team and budget are dynamic based on the user's query.
+# If no budget is specified, these generous defaults are used.
+default_transfer_budget_eur: 150000000
+default_max_wage_eur_weekly: 300000
+max_wage_bill_eur_weekly: 2000000         # Hard cap on weekly wages
 
 # Performance-based salary adjustment rules
 performance_salary_rules:
@@ -35,16 +21,7 @@ performance_salary_rules:
   young_talent_max_age: 24
   young_talent_bonus_pct: 10            # willing to pay 10% above cap for future potential
 
-# Current squad wage breakdown (for context)
-current_squad_wages:
-  goalkeepers: 65000
-  defenders: 280000
-  midfielders: 320000
-  attackers: 255000
-
 # Financial notes
 notes: >
   The club aims to maintain a sustainable wage structure while being competitive
-  in the transfer market. Priority positions for reinforcement this window are
-  striker and central midfielder. The board has approved an increase in the
-  wage bill provided transfers deliver clear squad improvements.
+  in the transfer market. Base the limits purely on the user's specific request.

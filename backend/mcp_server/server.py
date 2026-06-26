@@ -47,7 +47,7 @@ load_dotenv(_root / ".env")
 # ── Config ────────────────────────────────────────────────────────────────────
 _db_path_raw = os.getenv("SQLITE_DB_PATH", "data/football.db")
 DB_PATH = str((_root / _db_path_raw) if not Path(_db_path_raw).is_absolute() else Path(_db_path_raw))
-MCP_PORT = int(os.getenv("MCP_SERVER_PORT", "8001"))
+MCP_PORT = int(os.getenv("MCP_SERVER_PORT", "8005"))
 
 # Pre-built FBref cache (committed to repo, refreshed weekly by GitHub Actions)
 _FBREF_CACHE_DB = str(_root / "data" / "fbref_cache.db")
@@ -544,16 +544,18 @@ async def _scrape(fbref_obj, year: str, league: str, cat: str, timeout: int = 60
     input on error — this wrapper ensures it always exits within `timeout` seconds.
     """
     loop = _asyncio.get_event_loop()
-    with _futures.ThreadPoolExecutor(max_workers=1) as pool:
-        try:
-            return await _asyncio.wait_for(
-                loop.run_in_executor(pool, fbref_obj.scrape_stats, year, league, cat),
-                timeout=timeout,
-            )
-        except _asyncio.TimeoutError:
-            raise RuntimeError(
-                f"FBref scraping timed out after {timeout}s (league={league}, cat={cat})"
-            )
+    pool = _futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return await _asyncio.wait_for(
+            loop.run_in_executor(pool, fbref_obj.scrape_stats, year, league, cat),
+            timeout=timeout,
+        )
+    except _asyncio.TimeoutError:
+        raise RuntimeError(
+            f"FBref scraping timed out after {timeout}s (league={league}, cat={cat})"
+        )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _flatten_cols(df) -> "pd.DataFrame":
@@ -615,39 +617,39 @@ async def get_position_cohort(
         _COHORT_CACHE[cache_key] = (_time.time(), cached_json)
         return cached_json
 
-    # Skip FBref scrape when: FBREF_USE_MOCK=true (container), or ScraperFC failed to import.
-    if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" or not _SCRAPERFC_OK:
-        reason = "FBREF_USE_MOCK=true" if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" else "ScraperFC unavailable"
-        logger.info(f"Skipping FBref scrape ({reason}) — using mock cohort")
-        raise RuntimeError(reason)
-
-    STAT_COLS = ["goals", "assists", "xg", "xa", "shots", "shots_on_target",
-                 "prg_passes", "prg_carries", "att_pen_touches",
-                 "tackles", "interceptions", "pass_cmp_pct"]
-
-    # Canonical column aliases (checked case-insensitively)
-    COL_ALIASES = {
-        "player":          ["Player", "player"],
-        "position":        ["Pos", "position", "pos"],
-        "squad":           ["Squad", "squad", "team"],
-        "league":          ["Comp", "comp", "league", "competition"],
-        "age":             ["Age", "age"],
-        "minutes":         ["Min", "playing_time_min", "min", "minutes"],
-        "goals":           ["Gls", "goals"],
-        "assists":         ["Ast", "assists"],
-        "xg":              ["xG", "xg"],
-        "xa":              ["xAG", "xa"],
-        "shots":           ["Sh", "shots"],
-        "shots_on_target": ["SoT", "sot"],
-        "prg_passes":      ["PrgP", "prgp"],
-        "prg_carries":     ["PrgC", "prgc"],
-        "att_pen_touches": ["Att Pen", "Touches_att_pen", "att pen"],
-        "tackles":         ["Tkl", "tkl"],
-        "interceptions":   ["Int", "interceptions"],
-        "pass_cmp_pct":    ["Cmp%", "cmp%"],
-    }
-
     try:
+        # Skip FBref scrape when: FBREF_USE_MOCK=true (container), or ScraperFC failed to import.
+        if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" or not _SCRAPERFC_OK:
+            reason = "FBREF_USE_MOCK=true" if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" else "ScraperFC unavailable"
+            logger.info(f"Skipping FBref scrape ({reason}) — using mock cohort")
+            raise RuntimeError(reason)
+
+        STAT_COLS = ["goals", "assists", "xg", "xa", "shots", "shots_on_target",
+                     "prg_passes", "prg_carries", "att_pen_touches",
+                     "tackles", "interceptions", "pass_cmp_pct"]
+
+        # Canonical column aliases (checked case-insensitively)
+        COL_ALIASES = {
+            "player":          ["Player", "player"],
+            "position":        ["Pos", "position", "pos"],
+            "squad":           ["Squad", "squad", "team"],
+            "league":          ["Comp", "comp", "league", "competition"],
+            "age":             ["Age", "age"],
+            "minutes":         ["Min", "playing_time_min", "min", "minutes"],
+            "goals":           ["Gls", "goals"],
+            "assists":         ["Ast", "assists"],
+            "xg":              ["xG", "xg"],
+            "xa":              ["xAG", "xa"],
+            "shots":           ["Sh", "shots"],
+            "shots_on_target": ["SoT", "sot"],
+            "prg_passes":      ["PrgP", "prgp"],
+            "prg_carries":     ["PrgC", "prgc"],
+            "att_pen_touches": ["Att Pen", "Touches_att_pen", "att pen"],
+            "tackles":         ["Tkl", "tkl"],
+            "interceptions":   ["Int", "interceptions"],
+            "pass_cmp_pct":    ["Cmp%", "cmp%"],
+        }
+
         s = season
         if len(s) == 4 and s.isdigit():
             s = f"20{s[:2]}-20{s[2:]}"
@@ -855,6 +857,12 @@ async def get_enriched_player_stats(player_name: str, season: str = "2425") -> s
     }
 
     merged: dict = {"player_name": player_name, "season": s, "enriched_metrics": {}}
+
+    if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" or not _SCRAPERFC_OK:
+        reason = "FBREF_USE_MOCK=true" if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" else "ScraperFC unavailable"
+        logger.info(f"Skipping FBref scrape ({reason}) — using mock enriched stats")
+        merged["note"] = f"Mock data used ({reason})"
+        return json.dumps(merged, default=str)
 
     fbref = FBref()
     for cat, want_cols in FETCH_TABLES.items():

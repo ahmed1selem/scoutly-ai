@@ -132,7 +132,7 @@ class PlannerAgent(BaseAgent):
         if target_club:
             financial_res["team_name"] = target_club
         elif "team_name" not in financial_res:
-            financial_res["team_name"] = "FC Antigravity"
+            financial_res["team_name"] = "Target Club"
 
         final = {
             "run_id": self.run_id,

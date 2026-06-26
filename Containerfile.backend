@@ -57,7 +57,11 @@ RUN pip install --no-cache-dir \
     "mcp>=1.0.0" \
     langsmith \
     langchain-core \
-    langchain-text-splitters
+    langchain-text-splitters \
+    "wcmatch>=8.5" \
+    "langchain-anthropic>=0.1.0" \
+    "langchain-google-genai>=1.0.0"
+
 # Note: deepagents is already installed above from vendor/ — no PyPI entry needed
 # Note: botasaurus/ScraperFC are only needed in the MCP container, not here
 

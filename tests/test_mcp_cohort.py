@@ -29,7 +29,13 @@ from server import (
 def clear_cohort_cache():
     """Wipe the in-process cohort cache before every test so tests are independent."""
     _COHORT_CACHE.clear()
-    yield
+    
+    # Force the server to think ScraperFC is OK and not in mock mode
+    # so that it actually executes the dataframe processing logic
+    # instead of immediately bailing to the hardcoded mock cohort.
+    with patch("server._SCRAPERFC_OK", True), patch.dict("os.environ", {"FBREF_USE_MOCK": "false"}):
+        yield
+        
     _COHORT_CACHE.clear()
 
 

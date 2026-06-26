@@ -27,7 +27,7 @@ if (-not (Test-Path $vsPath)) {
 }
 
 # ── 3. Start MCP server in a new window ───────────────────────────────────────
-Write-Host "Starting MCP server on port 8001..." -ForegroundColor Cyan
+Write-Host "Starting MCP server on port 8005..." -ForegroundColor Cyan
 $mcpJob = Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
     "Set-Location '$PWD'; python -m backend.mcp_server.server"
