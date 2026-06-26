@@ -170,19 +170,10 @@ class ScouterAgent(BaseAgent):
         cohort = _inject_wages(cohort, fallback_league=club_league)
         await self.emit_progress(f"Got {len(cohort)} players — wages injected from league estimates")
 
-        # ── Step 4: Enrich TOP 3 candidates with deeper stats ─────────────────
-        await self.emit_progress("Enriching top 3 candidates with passing/possession/GCA stats...")
-        top3_by_minutes = sorted(cohort, key=lambda p: p.get("minutes", 0), reverse=True)[:3]
-        for p in top3_by_minutes:
-            try:
-                enriched = await self._call_mcp_tool(
-                    "get_enriched_player_stats",
-                    {"player_name": p["name"], "season": "2425"},
-                )
-                if isinstance(enriched, dict) and enriched.get("enriched_metrics"):
-                    p["raw_metrics"].update(enriched["enriched_metrics"])
-            except Exception:
-                pass
+        # ── Step 4: Trait scores only — no live FBref enrichment ─────────────
+        # The Kaggle cache already has goals, assists, xG, xAG, progressive
+        # carries/passes per-90 for all 2854 players. Opening Chrome to fetch
+        # FBref passing/possession tables is unnecessary and slow.
 
         # ── Step 5: Compute trait scores for all players ──────────────────────
         from ..engine.trait_engine import compute_trait_scores

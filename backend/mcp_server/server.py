@@ -882,10 +882,36 @@ async def get_enriched_player_stats(player_name: str, season: str = "2425") -> s
 
     merged: dict = {"player_name": player_name, "season": s, "enriched_metrics": {}}
 
+    # If the SQLite cache exists, look up what we already have for this player
+    # and return it — no Chrome, no FBref scraping needed.
+    if Path(_FBREF_CACHE_DB).exists():
+        try:
+            import sqlite3 as _s3
+            conn = _s3.connect(_FBREF_CACHE_DB)
+            row = conn.execute(
+                "SELECT raw_data FROM player_cohort WHERE season = ? AND LOWER(name) LIKE LOWER(?) LIMIT 1",
+                (season, f"%{player_name.split()[0]}%"),
+            ).fetchone()
+            conn.close()
+            if row:
+                player_data = json.loads(row[0])
+                # Expose the cached metrics as enriched_metrics so callers
+                # get the same structure they'd expect from FBref tables.
+                merged["enriched_metrics"] = {
+                    k: {"value": v.get("value", 0), "per90": v.get("per90", 0)}
+                    for k, v in player_data.get("raw_metrics", {}).items()
+                }
+                merged["note"] = "served from local cache"
+                logger.info(f"get_enriched_player_stats: cache hit for '{player_name}'")
+                return json.dumps(merged, default=str)
+        except Exception as exc:
+            logger.warning(f"Cache lookup for enriched stats failed: {exc}")
+
+    # No cache match — skip live FBref scrape (Chrome not needed for deployed demo)
     if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" or not _SCRAPERFC_OK:
         reason = "FBREF_USE_MOCK=true" if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" else "ScraperFC unavailable"
-        logger.info(f"Skipping FBref scrape ({reason}) — using mock enriched stats")
-        merged["note"] = f"Mock data used ({reason})"
+        logger.info(f"Skipping FBref scrape ({reason}) — returning empty enriched stats")
+        merged["note"] = f"Skipped ({reason})"
         return json.dumps(merged, default=str)
 
     fbref = FBref()
