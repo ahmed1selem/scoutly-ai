@@ -51,3 +51,13 @@ scouter_failed_output.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Scratch / debug files in root
+scratch/
+task.md
+*_log.txt
+mcp_tool_debug.txt
+test_*.py
+check_db.py
+benchmark_debate.py
+pytest.ini
