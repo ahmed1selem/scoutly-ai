@@ -169,7 +169,7 @@ MOCK_PLAYERS = [
 ]
 
 MOCK_FINANCIAL = {
-    "team_name":  "FC Antigravity",
+    "team_name":  "Arsenal FC",   # simulates scouting request "scout a winger for Arsenal"
     "salary_max": 80000,
     "salary_min": 10000,
     "value_max":  60_000_000,
@@ -246,7 +246,7 @@ def render_report() -> str:
         query="Find me a striker under €80K/week with 15+ goals who fits a high-press 4-3-3",
         run_id="test-render-00000000-0000",
         generated_at="26 June 2026, 14:30",
-        team_name="FC Antigravity",
+        team_name=MOCK_FINANCIAL.get("team_name", "FC Antigravity"),
         ranked_players=MOCK_PLAYERS,
         financial_decision=MOCK_FINANCIAL,
         tactical_summary=(

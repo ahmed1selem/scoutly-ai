@@ -127,11 +127,18 @@ class PlannerAgent(BaseAgent):
         if history:
             final_summary += f" (Applied {len(history)} revisions)"
 
+        # Inject the club being scouted for into financial_decision so the
+        # PDF cover, team_name field, and narrative all reflect the real club.
+        if target_club:
+            financial_res["team_name"] = target_club
+        elif "team_name" not in financial_res:
+            financial_res["team_name"] = "FC Antigravity"
+
         final = {
             "run_id": self.run_id,
             "summary": final_summary,
             "ranked_players": ranked_players,
-            "financial_decision": financial_res
+            "financial_decision": financial_res,
         }
 
         await self.emit_progress("Draft generated and ready for human review.")

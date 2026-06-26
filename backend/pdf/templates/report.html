@@ -784,10 +784,15 @@
   <div class="cover">
     <div class="cover-glow"></div>
     <div class="cover-glow-2"></div>
+    {# Strip generic prefixes so "Arsenal FC" → "ARSENAL", "FC Barcelona" → "BARCELONA" #}
+    {% set _cn = team_name
+         | replace("Football Club","") | replace(" F.C.","") | replace(" FC","")
+         | replace("FC ","") | replace("AC ","") | replace("AS ","") | replace("SS ","")
+         | replace("AFC","") | trim %}
     <div class="cover-inner">
-      <div class="cover-eyebrow">Confidential &middot; Football Intelligence Report</div>
-      <div class="cover-club">{{ team_name.split()[0] | upper }}</div>
-      <div class="cover-sub">Football Club</div>
+      <div class="cover-eyebrow">Confidential &middot; Football Scouting Intelligence</div>
+      <div class="cover-club">{{ _cn | upper if _cn else team_name | upper }}</div>
+      <div class="cover-sub">Recruitment Analysis {{ generated_at.split(",")[0].split(" ")[-1] }}</div>
       <div class="cover-rule"></div>
       <div class="cover-report-title">Player Scouting &amp; Recruitment<br/>Intelligence Report</div>
       <p class="cover-query">&ldquo;{{ query }}&rdquo;</p>
