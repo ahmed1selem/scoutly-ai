@@ -1,0 +1,53 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Runtime artifacts (generated per-run — do NOT commit)
+charts/
+reports/
+data/chroma/
+data/cache/
+
+# DB files — exclude by default but keep the ones we ship
+*.db
+# Re-include committed SQLite databases:
+!data/football.db
+!data/fbref_cache.db
+
+# Logs
+*.log
+backend.log
+backend_err.log
+mcp.log
+mcp_err.log
+out.log
+local_out.txt
+local_test.txt
+test_out.txt
+benchmark_output*.txt
+benchmark.out
+scouter_failed_output.txt
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

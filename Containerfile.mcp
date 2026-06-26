@@ -1,0 +1,45 @@
+# ── Scoutly MCP Server ─────────────────────────────────────────────────────────
+# Exposes FBref cohort tools via FastMCP / SSE on port 8001.
+# FBREF_USE_MOCK=true (set below) skips Chrome/botasaurus entirely and returns
+# a realistic mock cohort that is cached in-process — no Chromium needed.
+# To use real FBref data locally, unset FBREF_USE_MOCK and ensure Chrome is installed.
+# ───────────────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# ── Python deps ───────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "mcp[cli]>=1.0.0" \
+    "fastmcp>=0.1.0" \
+    aiosqlite==0.20.0 \
+    python-dotenv \
+    pandas \
+    numpy \
+    httpx \
+    requests \
+    "beautifulsoup4>=4.12" \
+    lxml \
+    tqdm \
+    botasaurus
+
+# ── App code ──────────────────────────────────────────────────────────────────
+# Only copy what the MCP server actually needs
+COPY backend/mcp_server/ScraperFC/  ./backend/mcp_server/ScraperFC/
+COPY backend/mcp_server/__init__.py  ./backend/mcp_server/__init__.py
+COPY backend/mcp_server/server.py    ./backend/mcp_server/server.py
+COPY backend/__init__.py             ./backend/__init__.py
+
+# SQLite player database (legacy fallback tools)
+COPY data/football.db                ./data/football.db
+
+# ── Config ────────────────────────────────────────────────────────────────────
+COPY .env .env
+
+# Skip Chrome/botasaurus — use realistic mock cohort cached per position.
+# Remove or override this env var to attempt live FBref scraping.
+ENV FBREF_USE_MOCK=true
+
+EXPOSE 8001
+
+CMD ["python", "-m", "backend.mcp_server.server"]

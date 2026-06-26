@@ -1,0 +1,80 @@
+# ── Scoutly AI Backend ─────────────────────────────────────────────────────────
+# FastAPI + SSE backend, agents, PDF generator, FAISS vectorstore.
+# Port 8000.
+# ───────────────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# ── System deps ───────────────────────────────────────────────────────────────
+# WeasyPrint needs GTK/Pango to render PDFs. On Windows dev the fallback saves
+# an HTML file instead — in this container WeasyPrint will produce a real PDF.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # WeasyPrint / Cairo / Pango
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libcairo2 \
+    libgdk-pixbuf-2.0-0 \
+    libffi-dev \
+    shared-mime-info \
+    fonts-liberation \
+    # SQLite
+    sqlite3 \
+    libsqlite3-dev \
+    # FAISS build (faiss-cpu comes as a wheel; build-essential is a safety net)
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── deepagents (vendored — not on PyPI) ───────────────────────────────────────
+# vendor/deepagents/ is the Python package directory (has __init__.py).
+# We copy it straight into site-packages so `import deepagents` works.
+COPY vendor/deepagents /usr/local/lib/python3.11/site-packages/deepagents
+
+# ── Python deps (from pyproject.toml) ────────────────────────────────────────
+COPY pyproject.toml ./pyproject.toml
+# Copy only what pip needs to resolve deps (no source yet)
+RUN pip install --no-cache-dir \
+    fastapi \
+    "uvicorn[standard]" \
+    aiofiles \
+    openai \
+    langchain \
+    "langchain-openai" \
+    "langchain-community" \
+    faiss-cpu \
+    "tavily-python" \
+    pandas \
+    numpy \
+    pydantic \
+    python-dotenv \
+    pyyaml \
+    weasyprint \
+    jinja2 \
+    matplotlib \
+    seaborn \
+    plotly \
+    httpx \
+    "mcp>=1.0.0" \
+    langsmith \
+    langchain-core \
+    langchain-text-splitters
+# Note: deepagents is already installed above from vendor/ — no PyPI entry needed
+# Note: botasaurus/ScraperFC are only needed in the MCP container, not here
+
+# ── App source ────────────────────────────────────────────────────────────────
+COPY backend/    ./backend/
+COPY prompts/    ./prompts/
+COPY frontend/   ./frontend/
+COPY configs/    ./configs/
+COPY .env        .env
+
+# ── Runtime dirs (data/ is mounted as a volume at run time) ──────────────────
+RUN mkdir -p charts reports data/vectorstore
+
+EXPOSE 8000
+
+# Increased keep-alive for long-running SSE streams (Stage 1 + 2 can take minutes)
+CMD ["python", "-m", "uvicorn", "backend.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--timeout-keep-alive", "1200"]

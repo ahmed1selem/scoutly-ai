@@ -1,0 +1,49 @@
+team:
+  name: "FC Antigravity"
+  season: "2024/25"
+  total_transfer_budget_eur: 80000000       # €80M total transfer window budget
+  current_wage_bill_eur_weekly: 920000      # Current weekly wage bill
+  max_wage_bill_eur_weekly: 1200000         # Hard cap on weekly wages
+
+# Per-position maximum weekly salary (EUR)
+position_salary_caps:
+  ST:  100000
+  LW:  90000
+  RW:  90000
+  CAM: 85000
+  CM:  70000
+  CDM: 65000
+  CB:  65000
+  LB:  55000
+  RB:  55000
+  GK:  45000
+
+# Performance-based salary adjustment rules
+performance_salary_rules:
+  # If player is top performer (above threshold), we can offer a premium
+  top_performer_threshold_goals: 15       # goals/season to qualify as top performer
+  top_performer_threshold_rating: 86     # overall rating threshold
+  top_performer_bonus_pct: 20            # can offer up to +20% above market rate
+
+  # If player is below expectations, we negotiate down
+  underperformer_threshold_goals: 5
+  underperformer_threshold_rating: 79
+  underperformer_discount_pct: 25        # can negotiate down to -25% of stated wage
+
+  # Young talent (under 24) development premium
+  young_talent_max_age: 24
+  young_talent_bonus_pct: 10            # willing to pay 10% above cap for future potential
+
+# Current squad wage breakdown (for context)
+current_squad_wages:
+  goalkeepers: 65000
+  defenders: 280000
+  midfielders: 320000
+  attackers: 255000
+
+# Financial notes
+notes: >
+  The club aims to maintain a sustainable wage structure while being competitive
+  in the transfer market. Priority positions for reinforcement this window are
+  striker and central midfielder. The board has approved an increase in the
+  wage bill provided transfers deliver clear squad improvements.

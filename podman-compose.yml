@@ -1,0 +1,50 @@
+version: "3.8"
+
+# Run with:  podman compose up --build
+# Or:        .\start_podman.ps1
+
+services:
+
+  football-mcp:
+    build:
+      context: .
+      dockerfile: Containerfile.mcp   # Podman accepts Containerfile names natively
+    container_name: football-mcp
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/app/data           # SQLite DB
+    env_file:
+      - .env
+    environment:
+      - FBREF_USE_MOCK=true        # no Chrome in container — realistic mock cohort
+    networks:
+      - football-net
+    restart: unless-stopped
+
+  football-backend:
+    build:
+      context: .
+      dockerfile: Containerfile.backend
+    container_name: football-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data           # vectorstore + SQLite (persists between restarts)
+      - ./prompts:/app/prompts     # hot-reload prompts without rebuild
+      - ./charts:/app/charts
+      - ./reports:/app/reports
+    environment:
+      - MCP_SERVER_HOST=football-mcp
+      - MCP_SERVER_PORT=8001
+    env_file:
+      - .env
+    depends_on:
+      - football-mcp
+    networks:
+      - football-net
+    restart: unless-stopped
+
+networks:
+  football-net:
+    driver: bridge

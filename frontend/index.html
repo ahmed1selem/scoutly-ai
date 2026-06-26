@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Football AI Management System</title>
+  <meta name="description" content="Multi-agent AI-powered football player scouting, analysis and tactical decision platform." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- ══ Navigation ════════════════════════════════════════════════════════ -->
+<nav class="navbar" id="navbar">
+  <div class="nav-brand">
+    <span class="nav-icon">⚽</span>
+    <span class="nav-title">FC <span class="brand-accent">Antigravity</span></span>
+  </div>
+  <div class="nav-links">
+    <a href="#agents" class="nav-link">Agents</a>
+    <a href="#scout" class="nav-link">Scout</a>
+    <a href="#activity" class="nav-link">Activity</a>
+  </div>
+  <div class="nav-status" id="systemStatus">
+    <span class="status-dot"></span> System Ready
+  </div>
+</nav>
+
+<!-- ══ Hero ══════════════════════════════════════════════════════════════ -->
+<section class="hero">
+  <div class="hero-bg"></div>
+  <div class="hero-content">
+    <div class="hero-badge">Agentic AI · Multi-Agent Architecture</div>
+    <h1 class="hero-title">Football Intelligence<br/><span class="gradient-text">Management System</span></h1>
+    <p class="hero-desc">
+      A coordinated team of AI agents scouts players, analyses performance data,
+      evaluates tactical fit, and delivers a boardroom-ready PDF report — autonomously.
+    </p>
+    <div class="hero-stats">
+      <div class="hero-stat"><span class="hero-stat-val">5</span><span class="hero-stat-label">AI Agents</span></div>
+      <div class="hero-stat-divider"></div>
+      <div class="hero-stat"><span class="hero-stat-val">96</span><span class="hero-stat-label">Club Profiles</span></div>
+      <div class="hero-stat-divider"></div>
+      <div class="hero-stat"><span class="hero-stat-val">5</span><span class="hero-stat-label">Top Leagues</span></div>
+      <div class="hero-stat-divider"></div>
+      <div class="hero-stat"><span class="hero-stat-val">Live</span><span class="hero-stat-label">FBref Data</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Agent Pipeline Visual ════════════════════════════════════════════ -->
+<section class="agents-section" id="agents">
+  <div class="container">
+    <div class="section-label">Architecture</div>
+    <h2 class="section-title">Multi-Agent Pipeline</h2>
+    <p class="section-desc">Each agent has its own <code>.md</code> system prompt. The Planner reads the agent manifest at runtime and decides which agents to invoke.</p>
+
+    <div class="pipeline">
+      <div class="pipeline-agent planner" id="pipe-planner">
+        <div class="agent-icon">🧠</div>
+        <div class="agent-name">Planner</div>
+        <div class="agent-role">Orchestrator</div>
+        <div class="agent-prompt-tag">planner.md</div>
+      </div>
+
+      <div class="pipeline-row">
+        <div class="pipeline-agent" id="pipe-financial">
+          <div class="agent-icon">💰</div>
+          <div class="agent-name">Financial</div>
+          <div class="agent-role">Budget Analysis</div>
+          <div class="agent-prompt-tag">financial.md</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-agent" id="pipe-scouter">
+          <div class="agent-icon">🔍</div>
+          <div class="agent-name">Scouter</div>
+          <div class="agent-role">MCP + Database</div>
+          <div class="agent-prompt-tag">scouter.md</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-agent" id="pipe-analysis">
+          <div class="agent-icon">📊</div>
+          <div class="agent-name">Analysis</div>
+          <div class="agent-role">Stats + Charts</div>
+          <div class="agent-prompt-tag">analysis.md</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-agent" id="pipe-tactical">
+          <div class="agent-icon">⚔️</div>
+          <div class="agent-name">Tactical</div>
+          <div class="agent-role">Fit Ranking</div>
+          <div class="agent-prompt-tag">tactical.md</div>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-agent" id="pipe-pdf">
+          <div class="agent-icon">📄</div>
+          <div class="agent-name">PDF Report</div>
+          <div class="agent-role">Final Output</div>
+          <div class="agent-prompt-tag">pdf_report.md</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Scout Input ═══════════════════════════════════════════════════════ -->
+<section class="scout-section" id="scout">
+  <div class="container">
+    <div class="section-label">Scouting Mission</div>
+    <h2 class="section-title">Start a Scouting Run</h2>
+    <p class="section-desc">Describe what you're looking for in plain English. The Planner will activate the right agents automatically.</p>
+
+    <div class="scout-card">
+      <div class="scout-examples">
+        <span class="example-label">Try:</span>
+        <button class="example-btn" onclick="setQuery(this)">Find me a Premier League striker under €80K/week who scores 15+ goals</button>
+        <button class="example-btn" onclick="setQuery(this)">Scout a young left winger under 24 from La Liga with high progressive carries</button>
+        <button class="example-btn" onclick="setQuery(this)">Find a press-resistant box-to-box midfielder under €60K/week for a 4-3-3 system</button>
+      </div>
+
+      <div class="input-group">
+        <textarea
+          id="queryInput"
+          class="query-input"
+          placeholder="e.g. Find me a striker under €80K/week who scores 20+ goals per season and fits a high-press 4-3-3 system..."
+          rows="3"
+        ></textarea>
+        <button class="scout-btn" id="scoutBtn" onclick="startScouting()">
+          <span class="btn-icon">🚀</span>
+          <span class="btn-text">Run Scouting Pipeline</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Live Activity Feed ════════════════════════════════════════════════ -->
+<section class="activity-section" id="activity">
+  <div class="container">
+    <div class="activity-header">
+      <div>
+        <div class="section-label">Live Pipeline</div>
+        <h2 class="section-title" style="margin-top: 4px;">Agent Activity</h2>
+      </div>
+      <div class="activity-controls">
+        <span class="run-id-display" id="runIdDisplay" style="display:none;"></span>
+        <button class="clear-btn" onclick="clearActivity()" style="display:none;" id="clearBtn">Clear</button>
+      </div>
+    </div>
+
+    <div class="activity-feed" id="activityFeed">
+      <div class="feed-placeholder">
+        <div class="feed-placeholder-icon">🤖</div>
+        <div class="feed-placeholder-text">Run a scouting query to see the agents in action</div>
+      </div>
+    </div>
+
+    <!-- Chatbot / Debate Panel (shown when draft is ready) -->
+    <div class="debate-panel" id="debatePanel" style="display:none;">
+      <div class="debate-header">
+        <h3 class="debate-title">Scouting Assistant Chat</h3>
+        <p class="debate-subtitle">Review the shortlist, ask for changes, or select a player to generate the final report.</p>
+      </div>
+      
+      <div class="debate-chat-container" id="debateChatContainer">
+        <!-- Chat bubbles will go here -->
+      </div>
+      
+      <div class="input-group debate-input-group">
+        <input type="text" id="directiveInput" class="query-input" placeholder="e.g. 'Let's go with player 1' or 'Find me someone faster'..." onkeypress="if(event.key === 'Enter') sendDirective()" />
+        <button class="scout-btn" id="directiveBtn" onclick="sendDirective()">
+          <span class="btn-icon">💬</span>
+          <span class="btn-text">Send</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Download Panel (shown when PDF is ready) -->
+    <div class="download-panel" id="downloadPanel" style="display:none;">
+      <div class="download-icon">🎉</div>
+      <div class="download-info">
+        <div class="download-title">Scouting Report Ready!</div>
+        <div class="download-subtitle" id="downloadSubtitle">Your PDF report has been generated.</div>
+      </div>
+      <a class="download-btn" id="downloadBtn" href="#" target="_blank">
+        ⬇ Download PDF Report
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ══ Footer ════════════════════════════════════════════════════════════ -->
+<footer class="footer">
+  <div class="container">
+    <div class="footer-brand">
+      <span class="nav-icon">⚽</span>
+      FC Antigravity · AI Management System
+    </div>
+    <div class="footer-links">
+      <a href="/docs" class="footer-link">API Docs</a>
+      <a href="/api/agents" class="footer-link">Agent List</a>
+      <a href="/api/health" class="footer-link">Health</a>
+    </div>
+    <div class="footer-copy">Powered by GPT-4.1-mini · Multi-Agent Architecture · FBref Live Data</div>
+  </div>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
