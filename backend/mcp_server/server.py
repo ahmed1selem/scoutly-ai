@@ -110,14 +110,38 @@ def _get_cohort_from_sqlite_cache(
                 if key in p.get("raw_metrics", {}):
                     p["raw_metrics"][key]["percentile"] = int(pct)
 
-        top15 = sorted(players, key=lambda p: p.get("minutes", 0), reverse=True)[:15]
+        # Return ALL players from cache — no 15-player cap here.
+        # The scouter's LLM selection step picks the best 3-5 from the full list.
+        players_sorted = sorted(players, key=lambda p: p.get("minutes", 0), reverse=True)
         logger.info(
-            f"SQLite cache HIT: pos={position} season={season} → {len(top15)} players"
+            f"SQLite cache HIT: pos={position} league={league or 'all'} season={season} "
+            f"→ {len(players_sorted)} players"
         )
-        return json.dumps(top15)
+        return json.dumps(players_sorted)
     except Exception as exc:
         logger.warning(f"SQLite cache lookup failed: {exc}")
         return None
+
+def _get_wages_from_cache(player_names: list[str], season: str) -> dict[str, int]:
+    """
+    Look up real wages from player_wages table for a list of players.
+    Returns {player_name: wage_eur} for any names found.
+    """
+    import sqlite3 as _sqlite3
+    if not Path(_FBREF_CACHE_DB).exists():
+        return {}
+    try:
+        conn = _sqlite3.connect(_FBREF_CACHE_DB)
+        placeholders = ",".join("?" for _ in player_names)
+        rows = conn.execute(
+            f"SELECT name, wage_eur FROM player_wages WHERE season = ? AND name IN ({placeholders})",
+            (season, *player_names),
+        ).fetchall()
+        conn.close()
+        return {name: wage for name, wage in rows if wage}
+    except Exception:
+        return {}
+
 
 mcp = FastMCP("Scoutly Unified MCP Server")
 

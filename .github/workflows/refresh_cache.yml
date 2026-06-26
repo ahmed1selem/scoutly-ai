@@ -2,14 +2,13 @@ name: Weekly FBref Cache Refresh
 
 on:
   schedule:
-    # Every Monday at 03:00 UTC — FBref least busy, no match days
-    - cron: '0 3 * * 1'
-  workflow_dispatch:   # allow manual trigger from GitHub Actions UI
+    - cron: '0 3 * * 1'   # Every Monday 03:00 UTC
+  workflow_dispatch:        # Manual trigger from GitHub Actions UI
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repo
@@ -23,29 +22,112 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install data-pipeline dependencies
+      - name: Install Chrome (for ScraperFC / Botasaurus)
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
+          sudo apt-get update -q
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install pandas numpy requests lxml beautifulsoup4 aiosqlite
+          pip install botasaurus botasaurus-requests botasaurus-driver \
+                      botasaurus-humancursor close_chrome \
+                      pandas numpy aiosqlite mcp \
+                      python-dotenv pyyaml requests lxml beautifulsoup4
 
-      - name: Run FBref cache builder
-        run: python -m backend.data_pipeline.cache_builder
-        env:
-          # Pass any required env vars (none for the public FBref scrape)
-          PYTHONDONTWRITEBYTECODE: "1"
-
-      - name: Check cache was built
+      - name: Install ScraperFC vendored package
         run: |
-          python - <<'EOF'
-          import sqlite3, sys
-          conn = sqlite3.connect("data/fbref_cache.db")
-          count = conn.execute("SELECT COUNT(*) FROM player_cohort").fetchone()[0]
-          conn.close()
-          print(f"Cache contains {count} player records")
-          if count < 50:
-              print("ERROR: too few records — aborting commit")
-              sys.exit(1)
-          EOF
+          pip install -e . --no-deps || true
+          # Make ScraperFC importable from the vendored location
+          echo "backend/mcp_server" >> .pth_paths || true
+
+      - name: Start MCP server (port 8005)
+        run: |
+          export FBREF_USE_MOCK=false
+          export MCP_SERVER_PORT=8005
+          export PYTHONPATH="${PYTHONPATH}:${PWD}/backend/mcp_server"
+          python backend/mcp_server/server.py &
+          echo "MCP_PID=$!" >> $GITHUB_ENV
+          sleep 8
+
+      - name: Build FBref player cache via MCP
+        run: |
+          python - <<'PYEOF'
+          import asyncio, json, sqlite3, os, sys
+          from datetime import datetime
+          from pathlib import Path
+          import numpy as np
+
+          sys.path.insert(0, '.')
+
+          CACHE_DB = Path('data/fbref_cache.db')
+          SEASON   = '2425'
+          MCP_URL  = 'http://127.0.0.1:8005/sse'
+
+          async def populate():
+              from mcp import ClientSession
+              from mcp.client.sse import sse_client
+
+              conn = sqlite3.connect(str(CACHE_DB))
+              conn.execute("""CREATE TABLE IF NOT EXISTS player_cohort (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT, position TEXT, squad TEXT, league TEXT,
+                  age INTEGER, minutes INTEGER, season TEXT,
+                  raw_data TEXT, scraped_at TEXT)""")
+              conn.execute("CREATE INDEX IF NOT EXISTS idx_pos_season ON player_cohort (position, season)")
+              conn.commit()
+
+              all_players = {}
+              positions = ['FW', 'MF', 'DF', 'GK']
+              leagues   = ['Premier League', 'La Liga', 'Bundesliga', 'Serie A', 'Ligue 1']
+
+              for pos in positions:
+                  for league in leagues:
+                      try:
+                          async with sse_client(MCP_URL) as (read, write):
+                              async with ClientSession(read, write) as session:
+                                  await session.initialize()
+                                  result = await session.call_tool(
+                                      'get_position_cohort',
+                                      {'position': pos, 'season': SEASON, 'league': league}
+                                  )
+                                  if result.content:
+                                      data = json.loads(result.content[0].text)
+                                      if isinstance(data, list):
+                                          for p in data:
+                                              if isinstance(p, dict) and p.get('name') and 'error' not in p:
+                                                  key = f"{p['name']}_{p.get('squad','')}".lower()
+                                                  all_players[key] = p
+                          print(f'  {pos}/{league}: total unique so far = {len(all_players)}')
+                      except Exception as e:
+                          print(f'  {pos}/{league}: {e}')
+                      await asyncio.sleep(3)
+
+              if len(all_players) < 20:
+                  print(f'ERROR: only {len(all_players)} players — aborting commit')
+                  conn.close()
+                  sys.exit(1)
+
+              now = datetime.utcnow().isoformat()
+              players = list(all_players.values())
+              conn.execute('DELETE FROM player_cohort WHERE season = ?', (SEASON,))
+              conn.executemany(
+                  'INSERT INTO player_cohort (name, position, squad, league, age, minutes, season, raw_data, scraped_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                  [(p['name'], p['position'], p.get('squad',''), p.get('league',''),
+                    p.get('age',0), p.get('minutes',0), SEASON, json.dumps(p), now)
+                   for p in players]
+              )
+              conn.commit()
+              rows = conn.execute('SELECT position, COUNT(*) FROM player_cohort GROUP BY position').fetchall()
+              conn.close()
+              print(f'\nCache built: {len(players)} players')
+              for pos, cnt in sorted(rows):
+                  print(f'  {pos}: {cnt}')
+
+          asyncio.run(populate())
+          PYEOF
 
       - name: Commit updated cache
         run: |

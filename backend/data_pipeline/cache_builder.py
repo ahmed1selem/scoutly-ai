@@ -1,62 +1,57 @@
 """
-FBref Cache Builder — weekly player data refresh.
+Full FBref + Capology cache builder.
 
-Fetches all position cohorts (FW / MF / DF / GK) from FBref using requests + pandas
-(no Chrome required) and writes them to data/fbref_cache.db.
+Uses ScraperFC (Botasaurus / Chrome) — works locally and on GitHub Actions.
+Does NOT use plain requests (FBref blocks those).
 
-Usage:
-    python -m backend.data_pipeline.cache_builder            # all positions
-    python -m backend.data_pipeline.cache_builder --pos FW   # one position
+What it builds:
+  player_cohort   — standard stats for ALL ≥900 min starters in Big 5 (all positions)
+  player_wages    — real weekly wages from Capology for each Big 5 league
 
-Run by GitHub Actions on a weekly schedule; output committed to the repo so the
-deployed container always has fresh data without needing Chrome.
+Run:
+  python -m backend.data_pipeline.cache_builder
+  python -m backend.data_pipeline.cache_builder --pos FW  (single position)
+  python -m backend.data_pipeline.cache_builder --no-wages  (skip Capology)
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
+import concurrent.futures as _futures
 import json
 import logging
 import sqlite3
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-ROOT      = Path(__file__).resolve().parent.parent.parent
-CACHE_DB  = ROOT / "data" / "fbref_cache.db"
-SEASON    = "2024-2025"
-SEASON_CODE = "2425"
+ROOT         = Path(__file__).resolve().parent.parent.parent
+CACHE_DB     = ROOT / "data" / "fbref_cache.db"
+SEASON_CODE  = "2425"
+SEASON_LABEL = "2024-2025"
+MIN_MINUTES  = 900   # true starters only
 
-POSITIONS = ["FW", "MF", "DF", "GK"]
+# ── Add ScraperFC to path ────────────────────────────────────────────────────
+_mcp_dir = str(ROOT / "backend" / "mcp_server")
+if _mcp_dir not in sys.path:
+    sys.path.insert(0, _mcp_dir)
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://fbref.com/en/comps/Big5/",
-    "DNT": "1",
-    "Connection": "keep-alive",
-}
+try:
+    from ScraperFC.fbref import FBref
+    from ScraperFC.capology import Capology
+    _SCRAPERFC_OK = True
+except Exception as e:
+    logger.error(f"ScraperFC import failed: {e}")
+    _SCRAPERFC_OK = False
 
-# FBref HTML table IDs to parse (Big 5 combined)
-_FBREF_URLS = {
-    "standard":   f"https://fbref.com/en/comps/Big5/{SEASON}/stats/players/{SEASON}-Big-5-European-Leagues-Stats",
-    "defensive":  f"https://fbref.com/en/comps/Big5/{SEASON}/defense/players/{SEASON}-Big-5-European-Leagues-Defense-Stats",
-    "passing":    f"https://fbref.com/en/comps/Big5/{SEASON}/passing/players/{SEASON}-Big-5-European-Leagues-Passing-Stats",
-    "possession": f"https://fbref.com/en/comps/Big5/{SEASON}/possession/players/{SEASON}-Big-5-European-Leagues-Possession-Stats",
-    "gsc":        f"https://fbref.com/en/comps/Big5/{SEASON}/gca/players/{SEASON}-Big-5-European-Leagues-Goal-And-Shot-Creation-Stats",
-}
-
-# Canonical column aliases  (ordered: first match wins)
+# ── Column aliases (same as in server.py) ────────────────────────────────────
 _COL_ALIASES: dict[str, list[str]] = {
     "player":          ["Player"],
     "position":        ["Pos"],
@@ -79,46 +74,15 @@ _COL_ALIASES: dict[str, list[str]] = {
     "sca":             ["SCA"],
     "gca":             ["GCA"],
 }
-
 STAT_KEYS = [
     "goals", "assists", "xg", "xa", "shots", "shots_on_target",
     "prg_passes", "prg_carries", "att_pen_touches",
     "tackles", "interceptions", "pass_cmp_pct", "sca", "gca",
 ]
+_FBREF_POS_MAP = {"FW": "FW", "MF": "MF", "DF": "DF", "GK": "GK"}
 
 
-# ── HTML → DataFrame ──────────────────────────────────────────────────────────
-
-def _fetch_table(url: str, retries: int = 3) -> pd.DataFrame | None:
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, headers=_HEADERS, timeout=30)
-            if resp.status_code == 429:
-                logger.warning(f"Rate limited on {url} — sleeping 60s")
-                time.sleep(60)
-                continue
-            resp.raise_for_status()
-            tables = pd.read_html(resp.text, header=[0, 1])
-            if not tables:
-                logger.warning(f"No tables found at {url}")
-                return None
-            df = tables[0].copy()
-            # Flatten MultiIndex columns
-            df.columns = [
-                c[1].strip() if isinstance(c, tuple) and c[1].strip() else c[0].strip()
-                if isinstance(c, tuple) else str(c)
-                for c in df.columns
-            ]
-            df = df.loc[:, ~df.columns.duplicated()]
-            # Drop "Unnamed" and squad-level sub-header rows
-            if "Player" in df.columns:
-                df = df[df["Player"].notna() & (df["Player"] != "Player")]
-            return df
-        except Exception as exc:
-            logger.warning(f"Attempt {attempt + 1}/{retries} failed for {url}: {exc}")
-            time.sleep(5 * (attempt + 1))
-    return None
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     low = {c.lower(): c for c in df.columns}
@@ -128,6 +92,17 @@ def _find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _flatten(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [
+        c[1].strip() if isinstance(c, tuple) and c[1].strip() else c[0].strip()
+        if isinstance(c, tuple) else str(c)
+        for c in df.columns
+    ]
+    df = df.loc[:, ~df.columns.duplicated()]
+    return df
+
+
 def _safe_float(val) -> float:
     try:
         return float(val) if pd.notna(val) else 0.0
@@ -135,71 +110,105 @@ def _safe_float(val) -> float:
         return 0.0
 
 
-# ── Core fetch function ────────────────────────────────────────────────────────
-
-def fetch_all_tables() -> dict[str, pd.DataFrame]:
-    """Download all FBref stat tables; return {table_name: DataFrame}."""
-    tables: dict[str, pd.DataFrame] = {}
-    for name, url in _FBREF_URLS.items():
-        logger.info(f"Fetching {name} table from {url}")
-        df = _fetch_table(url)
-        if df is not None:
-            tables[name] = df
-            logger.info(f"  → {len(df)} rows")
-        else:
-            logger.warning(f"  → FAILED (skipping {name})")
-        time.sleep(3)  # be polite to FBref
-    return tables
+async def _run_in_thread(fn, *args, timeout: int = 120):
+    """Run a blocking ScraperFC call in a thread with timeout."""
+    loop = asyncio.get_event_loop()
+    pool = _futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(pool, fn, *args),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"Scrape timed out after {timeout}s")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
-def build_player_records(tables: dict[str, pd.DataFrame]) -> list[dict]:
-    """Merge tables and build the same format as get_position_cohort returns."""
-    std = tables.get("standard")
-    if std is None:
-        raise ValueError("Standard table is required but missing")
+# ── FBref scraping ─────────────────────────────────────────────────────────
 
-    # Start with standard table, merge others on (Player, Squad)
-    merge_base = std.copy()
-    for name in ("defensive", "passing", "possession", "gsc"):
-        t = tables.get(name)
-        if t is None:
-            continue
-        p_col = _find_col(t, ["Player"]) or "Player"
-        s_col = _find_col(t, ["Squad"])   or "Squad"
-        keep_cols = [p_col, s_col] + [
-            c for c in t.columns
-            if c not in ("Player", "Squad", "Rk", "Matches", "Nation", "Born",
-                         "Pos", "Age", "Comp", "Min", "90s", "MP", "Starts", "Subs")
-            and c not in merge_base.columns
-        ]
-        keep_cols = list(dict.fromkeys(keep_cols))  # deduplicate
-        slim = t[[c for c in keep_cols if c in t.columns]].copy()
-        slim = slim.rename(columns={p_col: "Player", s_col: "Squad"})
-        merge_base = merge_base.merge(slim, on=["Player", "Squad"], how="left")
+async def _fetch_fbref_table(fbref: FBref, stat_type: str) -> pd.DataFrame | None:
+    """Fetch one FBref stat table (Big 5 Combined) as a DataFrame."""
+    logger.info(f"Fetching FBref {stat_type} table...")
+    try:
+        result = await _run_in_thread(
+            fbref.scrape_stats, SEASON_LABEL, "FBref Big 5 Combined", stat_type
+        )
+        if not result or "player" not in result:
+            logger.warning(f"  {stat_type}: no 'player' key in result")
+            return None
+        df = _flatten(result["player"])
+        if "Player" in df.columns:
+            df = df[df["Player"].notna() & (df["Player"] != "Player")]
+        logger.info(f"  {stat_type}: {len(df)} rows")
+        return df
+    except Exception as e:
+        logger.warning(f"  {stat_type} failed: {e}")
+        return None
 
-    df = merge_base.copy()
 
-    # Resolve canonical column names
-    col_map: dict[str, str | None] = {
-        want: _find_col(df, cands)
-        for want, cands in _COL_ALIASES.items()
-    }
+async def fetch_all_player_stats() -> list[dict]:
+    """
+    Scrape FBref Big 5 Combined standard + defensive tables,
+    return ALL players with ≥ MIN_MINUTES across all positions.
+    """
+    fbref = FBref()
 
-    required = {"player", "position", "minutes"}
-    missing  = required - {k for k, v in col_map.items() if v}
+    std_df  = await _fetch_fbref_table(fbref, "standard")
+    if std_df is None:
+        raise RuntimeError("Standard table required — cannot build cache without it")
+
+    # Merge defensive table (adds tackles + interceptions)
+    def_df = await _fetch_fbref_table(fbref, "defensive")
+    if def_df is not None:
+        try:
+            p_std  = _find_col(std_df, ["Player"]) or "Player"
+            s_std  = _find_col(std_df, ["Squad"])  or "Squad"
+            p_def  = _find_col(def_df, ["Player"]) or "Player"
+            s_def  = _find_col(def_df, ["Squad"])  or "Squad"
+            tkl_c  = _find_col(def_df, ["Tkl"])
+            int_c  = _find_col(def_df, ["Int"])
+            keep   = [c for c in [p_def, s_def, tkl_c, int_c] if c and c in def_df.columns]
+            slim   = def_df[keep].rename(columns={p_def: p_std, s_def: s_std})
+            new_c  = [c for c in slim.columns if c not in std_df.columns or c in [p_std, s_std]]
+            std_df = std_df.merge(slim[new_c], on=[p_std, s_std], how="left")
+            logger.info("Defensive table merged")
+        except Exception as e:
+            logger.warning(f"Defensive merge failed: {e}")
+
+    # Merge goal-shot-creation table (adds SCA/GCA)
+    gsc_df = await _fetch_fbref_table(fbref, "goal and shot creation")
+    if gsc_df is not None:
+        try:
+            p_gsc = _find_col(gsc_df, ["Player"]) or "Player"
+            s_gsc = _find_col(gsc_df, ["Squad"])  or "Squad"
+            sca_c = _find_col(gsc_df, ["SCA"])
+            gca_c = _find_col(gsc_df, ["GCA"])
+            keep  = [c for c in [p_gsc, s_gsc, sca_c, gca_c] if c and c in gsc_df.columns]
+            slim  = gsc_df[keep].rename(columns={p_gsc: "Player", s_gsc: "Squad"})
+            new_c = [c for c in slim.columns if c not in std_df.columns or c in ["Player","Squad"]]
+            std_df = std_df.merge(slim[new_c], on=["Player","Squad"], how="left")
+            logger.info("GSC table merged")
+        except Exception as e:
+            logger.warning(f"GSC merge failed: {e}")
+
+    # Resolve canonical columns
+    col_map = {want: _find_col(std_df, cands) for want, cands in _COL_ALIASES.items()}
+    col_map = {k: v for k, v in col_map.items() if v}
+
+    missing = {"player", "position", "minutes"} - set(col_map.keys())
     if missing:
-        raise ValueError(f"Missing essential columns: {missing}  (found: {list(col_map.keys())})")
+        raise ValueError(f"Missing essential columns: {missing}")
 
-    # Convert minutes to numeric
+    # Filter to ≥ MIN_MINUTES
     min_col = col_map["minutes"]
-    df[min_col] = pd.to_numeric(df[min_col], errors="coerce").fillna(0)
-
-    # Drop rows with < 450 minutes
-    df = df[df[min_col] >= 450].copy()
+    std_df[min_col] = pd.to_numeric(std_df[min_col], errors="coerce").fillna(0)
+    std_df = std_df[std_df[min_col] >= MIN_MINUTES].copy()
+    logger.info(f"Players with ≥{MIN_MINUTES} min: {len(std_df)}")
 
     players: list[dict] = []
-    for _, row in df.iterrows():
-        minutes  = _safe_float(row.get(min_col, 0))
+    for _, row in std_df.iterrows():
+        minutes  = _safe_float(row.get(col_map["minutes"], 0))
         nineties = minutes / 90 if minutes > 0 else 0.001
 
         age_raw = row.get(col_map.get("age", "") or "Age", 0)
@@ -237,38 +246,95 @@ def build_player_records(tables: dict[str, pd.DataFrame]) -> list[dict]:
             "minutes":       int(minutes),
             "season_90s":    round(minutes / 90, 1),
             "raw_metrics":   raw_metrics,
-            "coverage_flag": "good" if minutes >= 900 else "low",
+            "coverage_flag": "good",
         })
 
-    # Compute within-full-cohort percentiles per stat
-    for key in STAT_KEYS:
-        vals = [p["raw_metrics"].get(key, {}).get("per90", 0) for p in players]
-        arr  = np.array(vals, dtype=float)
-        if arr.max() == 0:
-            continue
-        ranks = (arr.argsort().argsort() / max(len(arr) - 1, 1) * 100).round().astype(int)
-        for p, pct in zip(players, ranks):
-            if key in p["raw_metrics"]:
-                p["raw_metrics"][key]["percentile"] = int(pct)
+    # Compute within-position percentiles
+    for pos_code in ["FW", "MF", "DF", "GK"]:
+        cohort = [p for p in players if pos_code in p["position"].upper()]
+        for key in STAT_KEYS:
+            vals = [p["raw_metrics"].get(key, {}).get("per90", 0) for p in cohort]
+            arr  = np.array(vals, dtype=float)
+            if arr.max() == 0:
+                continue
+            ranks = (arr.argsort().argsort() / max(len(arr) - 1, 1) * 100).round().astype(int)
+            for p, pct in zip(cohort, ranks):
+                if key in p["raw_metrics"]:
+                    p["raw_metrics"][key]["percentile"] = int(pct)
 
     return players
 
 
-# ── SQLite storage ─────────────────────────────────────────────────────────────
+# ── Capology wage scraping ─────────────────────────────────────────────────
+
+_CAPOLOGY_LEAGUES = {
+    "Premier League": "England Premier League",
+    "La Liga":        "Spain La Liga",
+    "Bundesliga":     "Germany Bundesliga",
+    "Serie A":        "Italy Serie A",
+    "Ligue 1":        "France Ligue 1",
+}
+
+
+def _scrape_capology_league(league_name: str) -> list[dict]:
+    """Scrape one Capology league — runs in a thread (Selenium)."""
+    cap = Capology()
+    try:
+        df = cap.scrape_league(league_name, currency="eur")
+        if df is None or df.empty:
+            return []
+        df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
+        results = []
+        for _, row in df.iterrows():
+            name  = str(row.get("player", "") or row.get("name", "")).strip()
+            wage  = row.get("weekly_gross_base_salary_(eur)", 0) or row.get("wage", 0) or 0
+            club  = str(row.get("club", "") or row.get("team", "")).strip()
+            try:
+                wage = int(float(str(wage).replace(",","").replace("€","").strip()))
+            except Exception:
+                wage = 0
+            if name and wage > 0:
+                results.append({"name": name, "squad": club, "wage_eur": wage})
+        logger.info(f"Capology {league_name}: {len(results)} players with wages")
+        return results
+    except Exception as e:
+        logger.warning(f"Capology {league_name} failed: {e}")
+        return []
+
+
+async def fetch_all_wages() -> list[dict]:
+    """Fetch wages from Capology for all 5 leagues concurrently."""
+    loop = asyncio.get_event_loop()
+    all_wages: list[dict] = []
+    for display_name, capology_name in _CAPOLOGY_LEAGUES.items():
+        logger.info(f"Fetching Capology wages: {display_name}...")
+        try:
+            wages = await _run_in_thread(_scrape_capology_league, capology_name, timeout=120)
+            for w in wages:
+                w["league"] = display_name
+            all_wages.extend(wages)
+            time.sleep(2)   # be polite between leagues
+        except Exception as e:
+            logger.warning(f"  {display_name} wages failed: {e}")
+    logger.info(f"Total wage records: {len(all_wages)}")
+    return all_wages
+
+
+# ── SQLite storage ─────────────────────────────────────────────────────────
 
 def create_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS player_cohort (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT    NOT NULL,
-            position    TEXT    NOT NULL,
-            squad       TEXT,
-            league      TEXT,
-            age         INTEGER,
-            minutes     INTEGER,
-            season      TEXT    NOT NULL,
-            raw_data    TEXT    NOT NULL,
-            scraped_at  TEXT    NOT NULL
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            position   TEXT NOT NULL,
+            squad      TEXT,
+            league     TEXT,
+            age        INTEGER,
+            minutes    INTEGER,
+            season     TEXT NOT NULL,
+            raw_data   TEXT NOT NULL,
+            scraped_at TEXT NOT NULL
         )
     """)
     conn.execute("""
@@ -276,8 +342,19 @@ def create_schema(conn: sqlite3.Connection) -> None:
         ON player_cohort (position, season)
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_cohort_league
-        ON player_cohort (league, position, season)
+        CREATE TABLE IF NOT EXISTS player_wages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            squad      TEXT,
+            league     TEXT,
+            wage_eur   INTEGER,
+            season     TEXT NOT NULL,
+            scraped_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_wages_name
+        ON player_wages (name, season)
     """)
     conn.commit()
 
@@ -286,62 +363,112 @@ def save_players(conn: sqlite3.Connection, players: list[dict], season: str) -> 
     now = datetime.utcnow().isoformat()
     conn.execute("DELETE FROM player_cohort WHERE season = ?", (season,))
     conn.executemany(
-        """INSERT INTO player_cohort (name, position, squad, league, age, minutes, season, raw_data, scraped_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        "INSERT INTO player_cohort (name, position, squad, league, age, minutes, season, raw_data, scraped_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (
-                p["name"], p["position"], p["squad"], p["league"],
-                p["age"], p["minutes"], season, json.dumps(p), now,
-            )
-            for p in players
-            if p.get("name")
+            (p["name"], p["position"], p["squad"], p["league"],
+             p["age"], p["minutes"], season, json.dumps(p), now)
+            for p in players if p.get("name")
         ],
     )
     conn.commit()
-    logger.info(f"Saved {len(players)} players to cache for season {season}")
+    logger.info(f"Saved {len(players)} players to player_cohort")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+def save_wages(conn: sqlite3.Connection, wages: list[dict], season: str) -> None:
+    now = datetime.utcnow().isoformat()
+    conn.execute("DELETE FROM player_wages WHERE season = ?", (season,))
+    conn.executemany(
+        "INSERT INTO player_wages (name, squad, league, wage_eur, season, scraped_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (w["name"], w.get("squad",""), w.get("league",""), w["wage_eur"], season, now)
+            for w in wages if w.get("wage_eur", 0) > 0
+        ],
+    )
+    conn.commit()
+    logger.info(f"Saved {len(wages)} wage records to player_wages")
 
-def main(positions: list[str] | None = None) -> None:
+
+def merge_wages_into_cohort(conn: sqlite3.Connection, season: str) -> None:
+    """Join wages into the player_cohort raw_data JSON."""
+    wage_lookup: dict[str, int] = {}
+    rows = conn.execute(
+        "SELECT name, squad, wage_eur FROM player_wages WHERE season = ?", (season,)
+    ).fetchall()
+    for name, squad, wage in rows:
+        wage_lookup[name.lower()] = wage
+        wage_lookup[f"{name.lower()}_{squad.lower()}"] = wage
+
+    cohort_rows = conn.execute(
+        "SELECT id, name, squad, raw_data FROM player_cohort WHERE season = ?", (season,)
+    ).fetchall()
+
+    updated = 0
+    for row_id, name, squad, raw_data_str in cohort_rows:
+        p = json.loads(raw_data_str)
+        wage = (
+            wage_lookup.get(f"{name.lower()}_{squad.lower()}")
+            or wage_lookup.get(name.lower())
+        )
+        if wage and wage > 0:
+            p["wage_eur"]       = wage
+            p["wage_estimated"] = False
+            p["wage_source"]    = "capology"
+            conn.execute(
+                "UPDATE player_cohort SET raw_data = ? WHERE id = ?",
+                (json.dumps(p), row_id),
+            )
+            updated += 1
+
+    conn.commit()
+    logger.info(f"Merged real wages into {updated}/{len(cohort_rows)} player records")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────
+
+async def main(skip_wages: bool = False) -> None:
+    if not _SCRAPERFC_OK:
+        raise RuntimeError("ScraperFC not available — Chrome/Botasaurus required")
+
     CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Building cache → {CACHE_DB}")
 
-    logger.info(f"Starting FBref cache build → {CACHE_DB}")
-    logger.info(f"Season: {SEASON}")
+    conn = sqlite3.connect(str(CACHE_DB))
+    create_schema(conn)
 
-    try:
-        tables = fetch_all_tables()
-        if not tables:
-            raise RuntimeError("No tables fetched from FBref — aborting")
+    # ── Step 1: FBref stats ────────────────────────────────────────────────
+    logger.info("=== Step 1: FBref player stats ===")
+    players = await fetch_all_player_stats()
+    logger.info(f"Total starters scraped: {len(players)}")
 
-        all_players = build_player_records(tables)
-        logger.info(f"Built {len(all_players)} player records total")
+    pos_counts = {}
+    for p in players:
+        pos = p["position"].split(",")[0].strip()
+        pos_counts[pos] = pos_counts.get(pos, 0) + 1
+    for pos, cnt in sorted(pos_counts.items()):
+        logger.info(f"  {pos}: {cnt} players")
 
-        # Filter to requested positions if specified
-        if positions:
-            pos_upper = [p.upper() for p in positions]
-            all_players = [
-                p for p in all_players
-                if any(code in p["position"].upper() for code in pos_upper)
-            ]
-            logger.info(f"Filtered to {positions}: {len(all_players)} records")
+    save_players(conn, players, SEASON_CODE)
 
-        conn = sqlite3.connect(str(CACHE_DB))
-        try:
-            create_schema(conn)
-            save_players(conn, all_players, SEASON_CODE)
-        finally:
-            conn.close()
+    # ── Step 2: Capology wages ─────────────────────────────────────────────
+    if not skip_wages:
+        logger.info("=== Step 2: Capology wages ===")
+        wages = await fetch_all_wages()
+        if wages:
+            save_wages(conn, wages, SEASON_CODE)
+            merge_wages_into_cohort(conn, SEASON_CODE)
+        else:
+            logger.warning("No wage data fetched — keeping league estimates")
+    else:
+        logger.info("Wage scraping skipped (--no-wages)")
 
-        logger.info(f"Cache build complete: {CACHE_DB}")
-
-    except Exception as exc:
-        logger.error(f"Cache build FAILED: {exc}")
-        raise
+    conn.close()
+    logger.info(f"Cache build complete: {len(players)} players in {CACHE_DB}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build FBref player cache")
-    parser.add_argument("--pos", nargs="*", help="Positions to fetch (FW MF DF GK)")
+    parser = argparse.ArgumentParser(description="Build FBref + Capology player cache")
+    parser.add_argument("--no-wages", action="store_true", help="Skip Capology wage scraping")
     args = parser.parse_args()
-    main(positions=args.pos)
+    asyncio.run(main(skip_wages=args.no_wages))
