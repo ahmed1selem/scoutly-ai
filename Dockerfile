@@ -29,31 +29,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY vendor/deepagents /usr/local/lib/python3.11/site-packages/deepagents
 
 # ── Python deps ───────────────────────────────────────────────────────────────
+# Install in two layers — heavy packages first (better layer caching)
 RUN pip install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    aiofiles \
-    openai \
-    langchain \
-    "langchain-openai" \
-    "langchain-community" \
+    "langchain>=0.3.0" \
+    "langchain-core>=0.3.0" \
+    "langchain-openai>=0.2.0" \
+    "langchain-community>=0.3.0" \
+    "langchain-anthropic>=0.3.0" \
+    "langchain-google-genai>=2.0.0" \
+    "langchain-text-splitters>=0.3.0" \
     faiss-cpu \
-    "tavily-python" \
     pandas \
     numpy \
-    pydantic \
-    python-dotenv \
-    pyyaml \
-    weasyprint \
-    jinja2 \
     matplotlib \
     seaborn \
-    plotly \
-    httpx \
+    plotly
+
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115.0" \
+    "uvicorn[standard]>=0.30.0" \
+    aiofiles \
+    "openai>=1.40.0" \
+    "tavily-python>=0.5.0" \
+    "pydantic>=2.0" \
+    python-dotenv \
+    pyyaml \
+    "weasyprint>=60.0" \
+    "jinja2>=3.1" \
+    "httpx>=0.27.0" \
     "mcp>=1.0.0" \
-    langsmith \
-    langchain-core \
-    langchain-text-splitters \
+    "langsmith>=0.1.0" \
     aiosqlite \
     requests \
     lxml \

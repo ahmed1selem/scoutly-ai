@@ -1,0 +1,53 @@
+# Keep the build context small — only source files needed at runtime
+
+# Secrets
+.env
+.env.*
+
+# Generated at runtime (not baked into image)
+charts/
+reports/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Tests
+tests/
+
+# Dev / scratch files
+scratch/
+*.log
+*.out
+*.txt
+benchmark_*.py
+benchmark_*.out
+check_db.py
+test_*.py
+test_*.txt
+task.md
+deploy.ps1
+start_local.ps1
+start_podman.ps1
+Containerfile.*
+podman-compose.yml
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.github/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Old chroma DB (replaced by FAISS)
+data/chroma/
+data/cache/
