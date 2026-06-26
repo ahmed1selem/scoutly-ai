@@ -92,23 +92,54 @@ class ScouterAgent(BaseAgent):
         from langchain_core.tools import tool
 
         @tool
-        async def get_position_cohort(position: str, season: str = "2425") -> list[dict]:
+        async def get_position_cohort(
+            position: str,
+            season: str = "2425",
+            league: str = "",
+        ) -> list[dict]:
             """
             Fetch the FULL cohort for a position from FBref with per-90 stats and
             percentile ranks already computed within the cohort.
 
             Use this as the PRIMARY search tool.  It returns ALL players at the
-            given position (or the mock fallback cohort on 403), each with:
+            given position with:
               raw_metrics.<metric>.value      — raw season total
               raw_metrics.<metric>.per90      — per-90-minutes value
               raw_metrics.<metric>.percentile — rank within position cohort (0–100)
+              wage_eur                        — estimated weekly wage in EUR (league-tier)
 
             position: FW | MF | DF | GK  (broad FBref codes)
+            league:   Optional league filter e.g. "Premier League", "La Liga".
+                      Leave empty to search all Big 5 leagues.
             """
+            # Wage estimates by league tier — used when live wage data unavailable.
+            WAGE_ESTIMATES = {
+                "premier league": {"starter": 55000, "rotation": 28000, "fringe": 12000},
+                "la liga":        {"starter": 45000, "rotation": 22000, "fringe": 10000},
+                "serie a":        {"starter": 38000, "rotation": 18000, "fringe": 8000},
+                "bundesliga":     {"starter": 38000, "rotation": 18000, "fringe": 8000},
+                "ligue 1":        {"starter": 30000, "rotation": 15000, "fringe": 7000},
+            }
             try:
-                res = await self._call_mcp_tool("get_position_cohort",
-                                                {"position": position, "season": season})
-                return res or []
+                res = await self._call_mcp_tool(
+                    "get_position_cohort",
+                    {"position": position, "season": season, "league": league},
+                )
+                players = res or []
+                # Inject estimated wages so the agent can apply budget filtering
+                # using data from this tool — not its own training knowledge.
+                for p in players:
+                    if not p.get("wage_eur"):
+                        league_key = p.get("league", league or "").lower()
+                        tier_map = next(
+                            (v for k, v in WAGE_ESTIMATES.items() if k in league_key),
+                            {"starter": 30000, "rotation": 15000, "fringe": 7000},
+                        )
+                        mins = int(p.get("minutes", 0))
+                        tier = "starter" if mins >= 1800 else "rotation" if mins >= 900 else "fringe"
+                        p["wage_eur"] = tier_map[tier]
+                        p["wage_estimated"] = True
+                return players
             except Exception as e:
                 return [{"error": str(e)}]
 

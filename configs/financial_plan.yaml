@@ -1,22 +1,23 @@
 team:
-  name: "FC Antigravity"
+  name: "Scoutly FC"
   season: "2024/25"
-  total_transfer_budget_eur: 80000000       # €80M total transfer window budget
-  current_wage_bill_eur_weekly: 920000      # Current weekly wage bill
-  max_wage_bill_eur_weekly: 1200000         # Hard cap on weekly wages
+  total_transfer_budget_eur: 150000000      # €150M total transfer window budget
+  current_wage_bill_eur_weekly: 1200000     # Current weekly wage bill
+  max_wage_bill_eur_weekly: 2000000         # Hard cap on weekly wages
 
 # Per-position maximum weekly salary (EUR)
+# These are SYSTEM defaults — the user's query overrides them when specified.
 position_salary_caps:
-  ST:  100000
-  LW:  90000
-  RW:  90000
-  CAM: 85000
-  CM:  70000
-  CDM: 65000
-  CB:  65000
-  LB:  55000
-  RB:  55000
-  GK:  45000
+  ST:  250000
+  LW:  200000
+  RW:  200000
+  CAM: 180000
+  CM:  160000
+  CDM: 150000
+  CB:  150000
+  LB:  130000
+  RB:  130000
+  GK:  120000
 
 # Performance-based salary adjustment rules
 performance_salary_rules:

@@ -27,7 +27,9 @@ ANTI-LOOPING RULE: Call `get_position_cohort` at most twice per position. It alr
 **Step 2 — Select 3–5 candidates.**
 From the cohort, pick players whose `raw_metrics` percentiles best match the query.
 Prioritize `coverage_flag = "good"` (≥ 900 minutes) for data reliability.
-Apply the financial constraint: only include players where wage estimate is within the budget.
+Apply the financial constraint using the `wage_eur` field in each player record.
+These are league-tier estimates — USE THEM. Do NOT substitute your own knowledge of
+real player wages. The `wage_eur` in the tool data is what matters for this search.
 
 **Step 3 — Enrich each selected player.**
 For each selected player, call `get_enriched_player_stats(player_name)`.
