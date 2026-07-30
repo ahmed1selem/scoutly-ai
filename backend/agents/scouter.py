@@ -265,24 +265,52 @@ class ScouterAgent(BaseAgent):
             except Exception as e:
                 await self.emit_progress(f"Vector DB lookup failed ({e}) — searching full Big 5")
 
-        # ── Step 2: Extract position from query ───────────────────────────────
+        # ── Step 2: Extract position and age bounds from query ────────────────
+        # Age travels with the position because the cohort query needs both and
+        # a second LLM call to fetch one integer is not worth the tokens. Until
+        # this carried age, "a centre-back under 27" returned a 33-year-old: the
+        # bound was extracted elsewhere, for a search path this agent never uses.
         await self.emit_progress("Extracting target position from query...")
+        target_position, min_age, max_age = "FW", None, None
         try:
             pos_resp = await self.client.chat.completions.create(
                 model=settings.OPENAI_MODEL,
                 messages=[{"role": "user", "content": (
-                    "Reply ONLY with JSON {\"position\": \"FW\"|\"MF\"|\"DF\"|\"GK\"}. "
-                    "ST/CF/LW/RW → FW.  CM/DM/AM → MF.  CB/LB/RB → DF.\n\n"
+                    "Reply ONLY with JSON "
+                    "{\"position\": \"FW\"|\"MF\"|\"DF\"|\"GK\", "
+                    "\"max_age\": int|null, \"min_age\": int|null}. "
+                    "ST/CF/LW/RW → FW.  CM/DM/AM → MF.  CB/LB/RB → DF.\n"
+                    "Age bounds are inclusive: \"under 27\" means max_age 26, "
+                    "\"27 or younger\" means max_age 27, \"over 24\" means "
+                    "min_age 25. Use null when the query says nothing about age.\n\n"
                     f"Query: {query}"
                 )}],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                max_tokens=20,
+                max_tokens=48,
             )
-            target_position = json.loads(pos_resp.choices[0].message.content).get("position", "FW")
+            parsed = json.loads(pos_resp.choices[0].message.content)
+            target_position = parsed.get("position") or "FW"
+            for key, name in ((parsed.get("min_age"), "min"), (parsed.get("max_age"), "max")):
+                if isinstance(key, int) and 15 <= key <= 45:
+                    if name == "min":
+                        min_age = key
+                    else:
+                        max_age = key
         except Exception:
-            target_position = "FW"
-        await self.emit_progress(f"Target position: {target_position}, league filter: {club_league or 'all Big 5'}")
+            pass
+
+        age_note = ""
+        if min_age and max_age:
+            age_note = f", age {min_age}-{max_age}"
+        elif max_age:
+            age_note = f", age up to {max_age}"
+        elif min_age:
+            age_note = f", age from {min_age}"
+        await self.emit_progress(
+            f"Target position: {target_position}, "
+            f"league filter: {club_league or 'all Big 5'}{age_note}"
+        )
 
         # ── Step 3: Fetch cohort directly via MCP ─────────────────────────────
         await self.emit_progress(f"Fetching {target_position} cohort from player database...")
@@ -295,6 +323,8 @@ class ScouterAgent(BaseAgent):
                     "league":      club_league,
                     "limit":       COHORT_LIMIT,
                     "min_minutes": 450,
+                    "max_age":     max_age,
+                    "min_age":     min_age,
                 },
             )
             cohort = cohort if isinstance(cohort, list) else []

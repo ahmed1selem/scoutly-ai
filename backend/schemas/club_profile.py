@@ -63,10 +63,18 @@ class RecruitmentProfile(BaseModel):
     poor_fit_traits: list[str] = []
 
 class Evidence(BaseModel):
+    """
+    Field names follow the knowledge-base JSON, not an idealised shape.
+
+    The model previously declared `type`/`source`/`url` while every profile ever
+    written used `source_type`/`source_url`, so validating a real profile failed
+    on every evidence entry — which is why nothing validated one.
+    """
     evidence_id: str
-    type: str
-    source: str
-    url: str | None = None
+    source_type: str
+    source_url: str | None = None
+    date: str | None = None
+    reliability: str | None = None
     text_summary: str
 
 class ClubProfile(BaseModel):

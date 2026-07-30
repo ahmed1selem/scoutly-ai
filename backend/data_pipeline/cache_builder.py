@@ -274,6 +274,23 @@ def _compute_percentiles(players: list[dict]) -> None:
 
 # ── FBref scraping ───────────────────────────────────────────────────────────
 
+def _stage_club_tables(stat_type: str, result: dict) -> None:
+    """
+    Persist the squad-for and squad-against tables that came back with the
+    player table. club_profile_builder reads these; nothing else does, so a
+    failure here must never fail the player build.
+    """
+    slug = stat_type.replace(" ", "_")
+    for side in ("squad", "opponent"):
+        table = result.get(side)
+        if table is None or getattr(table, "empty", True):
+            continue
+        try:
+            _flatten(table).to_pickle(STAGE_DIR / f"{SEASON_CODE}_club_{side}_{slug}.pkl")
+        except Exception as exc:
+            logger.warning(f"  {stat_type}: could not stage {side} table ({exc})")
+
+
 async def _fetch_table(fbref, stat_type: str, attempts: int = 3) -> pd.DataFrame | None:
     """
     Fetch one FBref stat table (Big 5 Combined) as a flat DataFrame.
@@ -309,6 +326,10 @@ async def _fetch_table(fbref, stat_type: str, attempts: int = 3) -> pd.DataFrame
                 raise ValueError("empty player table")
             STAGE_DIR.mkdir(parents=True, exist_ok=True)
             df.to_pickle(staged)
+            # scrape_stats fetches squad-for and squad-against alongside the
+            # player table on the same page load. Discarding them meant the club
+            # profiles had no measured basis while their data sat in memory.
+            _stage_club_tables(stat_type, result)
             logger.info(f"  {stat_type}: {len(df)} rows in {time.time() - t0:.0f}s (staged)")
             return df
         except Exception as e:
@@ -346,6 +367,61 @@ def _merge_table(base: pd.DataFrame, extra: pd.DataFrame, wanted: list[str]) -> 
     merged = base.merge(slim[[p_base, s_base] + keep], on=[p_base, s_base], how="left")
     logger.info(f"  merged {keep}")
     return merged
+
+
+# Categories whose squad-for / squad-against tables the club profiles need.
+# Kept separate from _MERGE_TABLES because these are wanted for the team-level
+# indicators, not for any player metric:
+#   possession            touches by zone, the territory signal
+#   defensive             tackles by third, the press-height signal
+#   advanced goalkeeping  GK #OPA and AvgDist — a direct read on line height
+#   passing / pass types  directness, crosses, through balls, corners
+#   goal and shot creation  SCA/GCA by type — set-piece vs take-on creation
+#   misc                  aerials, fouls, offsides won
+_CLUB_TABLES = [
+    "possession", "defensive", "advanced goalkeeping",
+    "passing", "pass types", "goal and shot creation", "misc",
+]
+
+
+async def fetch_club_tables(force: bool = False) -> int:
+    """
+    Stage the FBref squad-for / squad-against tables for the club profiles.
+
+    Separate from the player build on purpose: _fetch_table short-circuits on a
+    staged player pickle, so a cache that is already built would never reach the
+    squad tables. This walks the categories the club indicators need and stages
+    both sides of each.
+    """
+    fbref = FBref()
+    staged = 0
+    for stat_type in _CLUB_TABLES:
+        slug = stat_type.replace(" ", "_")
+        target = STAGE_DIR / f"{SEASON_CODE}_club_squad_{slug}.pkl"
+        if target.exists() and not force:
+            logger.info(f"  {stat_type}: club tables already staged, skipping")
+            staged += 1
+            continue
+
+        logger.info(f"Fetching FBref club tables for '{stat_type}'...")
+        _kill_stale_chrome()
+        t0 = time.time()
+        try:
+            result = await _run_in_thread(
+                fbref.scrape_stats, SEASON_LABEL, "FBref Big 5 Combined", stat_type
+            )
+            STAGE_DIR.mkdir(parents=True, exist_ok=True)
+            _stage_club_tables(stat_type, result or {})
+            if target.exists():
+                staged += 1
+                logger.info(f"  {stat_type}: staged in {time.time() - t0:.0f}s")
+            else:
+                logger.warning(f"  {stat_type}: no squad table returned")
+        except Exception as exc:
+            logger.warning(f"  {stat_type} failed after {time.time() - t0:.0f}s: {exc}")
+
+    logger.info(f"Club tables staged for {staged}/{len(_CLUB_TABLES)} categories")
+    return staged
 
 
 async def fetch_all_player_stats() -> list[dict]:
@@ -884,6 +960,9 @@ if __name__ == "__main__":
     parser.add_argument("--restamp-wages", action="store_true",
                         help="Recompute modelled wages on the existing cache and exit "
                              "(no scraping)")
+    parser.add_argument("--club-tables", action="store_true",
+                        help="Stage only the FBref squad/opponent tables used by "
+                             "club_profile_builder, then exit")
     parser.add_argument("--legacy-db", type=Path, default=DEFAULT_LEGACY_DB,
                         help=f"Cache to backfill {_LEGACY_ONLY_METRICS} from "
                              f"(default: {DEFAULT_LEGACY_DB.name})")
@@ -891,6 +970,10 @@ if __name__ == "__main__":
 
     if args.verify:
         sys.exit(0 if verify() else 1)
+
+    if args.club_tables:
+        count = asyncio.run(fetch_club_tables(force=args.fresh))
+        sys.exit(0 if count else 1)
 
     if args.sofascore_only:
         conn = sqlite3.connect(str(CACHE_DB))

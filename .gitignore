@@ -58,6 +58,9 @@ task.md
 *_log.txt
 mcp_tool_debug.txt
 test_*.py
+# ...but the real suite lives in tests/ and must be tracked. Without this,
+# three of the ten suites were silently untracked.
+!tests/test_*.py
 check_db.py
 benchmark_debate.py
 pytest.ini

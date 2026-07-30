@@ -873,6 +873,8 @@ async def get_position_cohort(
     league: str = "",
     limit: int = 40,
     min_minutes: int = 450,
+    max_age: Optional[int] = None,
+    min_age: Optional[int] = None,
 ) -> str:
     """
     Return the strongest candidates at a position, with per-90 stats and percentile ranks.
@@ -890,11 +892,26 @@ async def get_position_cohort(
         limit:       Maximum players to return (default 40). Keep this bounded —
                      the caller feeds the result to an LLM with a finite context.
         min_minutes: Drop players below this many minutes played (default 450).
+        max_age:     Inclusive upper age bound. "Under 27" is max_age=26.
+        min_age:     Inclusive lower age bound.
     """
     import pandas as pd
 
     limit = max(1, min(int(limit), 200))
     min_minutes = max(0, int(min_minutes))
+
+    def _within_age(player: dict) -> bool:
+        try:
+            age = int(player.get("age", 0) or 0)
+        except (TypeError, ValueError):
+            return True          # unknown age is not evidence of ineligibility
+        if not age:
+            return True
+        if max_age is not None and age > max_age:
+            return False
+        if min_age is not None and age < min_age:
+            return False
+        return True
 
     def _trim(players: list[dict]) -> str:
         eligible = [p for p in players if int(p.get("minutes", 0)) >= min_minutes]
@@ -903,6 +920,16 @@ async def get_position_cohort(
                 f"min_minutes={min_minutes} excluded all {len(players)} players — ignoring filter"
             )
             eligible = players
+        # Age is a hard constraint from the brief, unlike min_minutes: a club
+        # asking for an under-27 does not want the filter quietly relaxed, so
+        # this one is allowed to empty the cohort.
+        if max_age is not None or min_age is not None:
+            before = len(eligible)
+            eligible = [p for p in eligible if _within_age(p)]
+            logger.info(
+                f"age filter (min={min_age}, max={max_age}) kept "
+                f"{len(eligible)}/{before} players"
+            )
         selected = sorted(eligible, key=lambda p: p.get("minutes", 0), reverse=True)[:limit]
         logger.info(
             f"get_position_cohort: pos={position} league={league or 'all'} "
@@ -911,7 +938,8 @@ async def get_position_cohort(
         return json.dumps(selected, default=str)
 
     # ── In-process memo ───────────────────────────────────────────────────────
-    cache_key = (position.upper(), season, league.lower(), limit, min_minutes)
+    cache_key = (position.upper(), season, league.lower(), limit, min_minutes,
+                 max_age, min_age)
     if cache_key in _COHORT_CACHE:
         ts, cached = _COHORT_CACHE[cache_key]
         if _time.time() - ts < _COHORT_TTL:
