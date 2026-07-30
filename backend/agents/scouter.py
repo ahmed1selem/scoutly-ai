@@ -100,6 +100,11 @@ def _apply_web_wage(player: dict, extracted: dict) -> None:
     player["wage_eur"] = int(round(weekly))
     player["wage_estimated"] = True
     player["wage_source"] = domain
+    # The modelled band was computed around the wage this figure just replaced,
+    # so it no longer brackets anything. Leaving it there is how a player with a
+    # cited EUR 19,808/wk came out on the report as "EUR 37,000-EUR 61,000".
+    player.pop("wage_low", None)
+    player.pop("wage_high", None)
 
 
 class ScouterAgent(BaseAgent):

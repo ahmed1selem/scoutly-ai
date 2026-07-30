@@ -52,6 +52,9 @@
 {%- set season = "2024-25" -%}
 {%- set club = team_name or "the club" -%}
 {%- set n = ranked_players|length -%}
+{#- Wage databases the scouter may quote. A figure from one of these is
+    published, but it is still not contract data — say which it is. -#}
+{%- set wage_sites = ['capology.com', 'salarysport.com', 'spotrac.com', 'footballbenchmark.com'] -%}
 
 <title>{{ club }} — Scouting Report</title>
 <style>
@@ -120,6 +123,9 @@
   td{ padding:var(--s2) var(--s2) var(--s2) 0; border-bottom:1px solid var(--line);
       vertical-align:baseline; }
   th.r,td.r{ text-align:right; padding-right:0; }
+  /* A right-aligned cell sits flush against its own right edge, so without a
+     gutter on the next column "23" and "midfielder" run together. */
+  th + th, td + td{ padding-left:var(--s2); }
   tbody tr:last-child td{ border-bottom:1px solid var(--ink-2); }
   .rank{ font-weight:700; color:var(--ink-4); width:1.6em; }
   .who{ font-weight:600; }
@@ -337,21 +343,26 @@
   Fit = demonstrated fit: the share of {{ club }}'s stated requirement the player
   has measurably met, with unmeasured requirements counted as unmet.
   Cov. = proportion of required traits that could be measured at all.
-  Wages marked <b>est</b> are modelled from league, minutes and age, not contract data.
+  Wages marked <b>est</b> are not contract data: each is either modelled from
+  league, minutes and age, or quoted from a published wage database.
   Values are Transfermarkt estimates.
 </p>
 
 {% set fn = selection_funnel or {} %}
-{% if fn.get('cohort') and n < 3 %}
+{# The funnel counts who survived the filters; n counts who this report covers.
+   They differ once a reviewer picks a subset, and saying "only 1 met the brief
+   ... leaving 3" in one sentence reads as a contradiction. #}
+{% set shortlisted = fn.get('shortlisted', n) %}
+{% if fn.get('cohort') and (shortlisted < 3 or n < shortlisted) %}
   <div class="notice">
-    <b>Only {{ n }} candidate{{ 's' if n != 1 else '' }} met this brief.</b>
+    <b>{{ shortlisted }} candidate{{ 's' if shortlisted != 1 else '' }} met this brief{% if n < shortlisted %}; this report covers the {{ n }} carried forward for review{% endif %}.</b>
     Of {{ fn.cohort }} players considered at this position:
     {% if fn.get('already_at_club') %}{{ fn.already_at_club }} already at {{ club }};{% endif %}
     {% if fn.get('wrong_primary_position') %}{{ fn.wrong_primary_position }} play the position only as a secondary role;{% endif %}
     {% if fn.get('over_fee_ceiling') %}<b>{{ fn.over_fee_ceiling }} priced above the fee ceiling</b>{% if fn.get('cheapest_excluded_fee_eur') %} (cheapest excluded: {{ money(fn.cheapest_excluded_fee_eur) }}){% endif %};{% endif %}
     {% if fn.get('over_wage_ceiling') %}<b>{{ fn.over_wage_ceiling }} above the wage ceiling</b>{% if fn.get('lowest_excluded_wage_eur') %} (lowest excluded: {{ money(fn.lowest_excluded_wage_eur) }}/wk){% endif %};{% endif %}
     {% if fn.get('over_wage_on_confirmation') %}{{ fn.over_wage_on_confirmation }} dropped once a confirmed wage exceeded the ceiling;{% endif %}
-    leaving {{ fn.get('shortlisted', n) }}.
+    leaving {{ shortlisted }}.
     Raising whichever ceiling did most of the cutting is the fastest way to widen
     the field.
   </div>
@@ -422,7 +433,9 @@
       </div>
       <div class="n">
         {%- if not p.get('wage_eur') -%}not available
-        {%- elif p.get('wage_source') == 'capology' -%}per week &middot; contract data
+        {%- elif p.get('wage_estimated') == false -%}per week &middot; contract data
+        {%- elif p.get('wage_source') in wage_sites -%}
+          per week &middot; published figure, {{ p.wage_source }}
         {%- elif p.get('wage_source') == 'market_value' -%}
           per week &middot; modelled from market value
         {%- else -%}per week &middot; estimated from league, minutes and age
@@ -475,7 +488,7 @@
       </tr></tbody>
     </table>
     <p class="src" style="margin-top:calc(-1 * var(--s3)); margin-bottom:var(--s4)">
-      {{ p.get('fee_basis', '') }}. Amortisation assumes a
+      {% if p.get('fee_basis') %}{{ p.fee_basis }}. {% endif %}Amortisation assumes a
       {{ p.get('deal_years_assumed', 4) }}-year contract. Wage is the weekly figure
       &times;52 and inherits its own estimate caveat.
     </p>

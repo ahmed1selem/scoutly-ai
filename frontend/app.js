@@ -20,8 +20,12 @@ let eventSource  = null;
 
 // ── UI Helpers ────────────────────────────────────────────────────────────────
 
+// The example buttons carry a short label but a full brief in data-q, so the
+// chips stay readable without shipping a half-written query to the planner.
 function setQuery(btn) {
-  document.getElementById('queryInput').value = btn.textContent.trim();
+  const input = document.getElementById('queryInput');
+  input.value = btn.dataset.q || btn.textContent.trim();
+  input.focus();
 }
 
 function formatTime(ts) {
@@ -62,7 +66,7 @@ function clearActivity() {
   const feed = document.getElementById('activityFeed');
   feed.innerHTML = `
     <div class="feed-placeholder">
-      <div class="feed-placeholder-icon">🤖</div>
+      <div class="feed-placeholder-icon">⚽</div>
       <div class="feed-placeholder-text">Run a scouting query to see the agents in action</div>
     </div>`;
   document.getElementById('downloadPanel').style.display = 'none';
@@ -129,7 +133,7 @@ function renderEvent(event) {
       }
     }
   } else if (event.error) {
-    dataHtml = `<div class="event-data" style="color: var(--red);">${escapeHtml(event.error)}</div>`;
+    dataHtml = `<div class="event-data" style="color: var(--bad);">${escapeHtml(event.error)}</div>`;
   }
 
   const ts = event.timestamp ? formatTime(event.timestamp) : new Date().toLocaleTimeString();
@@ -144,7 +148,11 @@ function renderEvent(event) {
         <span class="event-type-badge ${badgeClass}">${badgeLabel}</span>
         <span class="event-timestamp">${ts}</span>
       </div>
-      <div class="event-message">${formatMessageWithCards(event.message)}</div>
+      <div class="event-message">${formatMessageWithCards(
+        // A failure carries its detail in event.error and often no message at
+        // all — without a fallback the row renders as a blank line.
+        event.message || (event.error ? 'The agent stopped with an error.' : '')
+      )}</div>
       ${dataHtml}
     </div>`;
 
@@ -385,7 +393,7 @@ function resetScoutBtn() {
   const scoutBtn = document.getElementById('scoutBtn');
   scoutBtn.disabled = false;
   scoutBtn.classList.remove('running');
-  scoutBtn.querySelector('.btn-icon').textContent = '🚀';
+  scoutBtn.querySelector('.btn-icon').textContent = '⚽';
   scoutBtn.querySelector('.btn-text').textContent = 'Run Scouting Pipeline';
 }
 
@@ -429,9 +437,15 @@ function wageText(p) {
   return p.wage_eur ? `€${Number(p.wage_eur).toLocaleString()}/wk` : '—';
 }
 
+// Wage sites the scouter is allowed to quote. A figure from one of them is a
+// published number, but only the offline Capology cache (wage_estimated false)
+// is contract data — the web cross-check can still misattribute.
+const WAGE_SITES = ['capology.com', 'salarysport.com', 'spotrac.com', 'footballbenchmark.com'];
+
 function wageBasis(p) {
   if (!p.wage_eur) return 'not available';
-  if (p.wage_source === 'capology.com') return 'contract data';
+  if (p.wage_estimated === false) return 'contract data';
+  if (WAGE_SITES.includes(p.wage_source)) return `published figure · ${p.wage_source}`;
   if (p.wage_source === 'market_value') return 'modelled from market value';
   return 'estimated from league, minutes and age';
 }
@@ -511,14 +525,14 @@ function renderPlayerCardsHtml(players) {
           ${p.abstain ? `<div class="funnel-note"><b>No verdict issued.</b> ${escapeHtml(p.abstain_reason || 'Evidence too thin to support a recommendation.')}</div>` : ''}
 
           <div class="player-stats-grid">
-            <div class="stat-box"><strong>Goals/90:</strong> ${metricCell(rm, 'goals')}</div>
-            <div class="stat-box"><strong>Assists/90:</strong> ${metricCell(rm, 'assists')}</div>
-            <div class="stat-box"><strong>Tackles/90:</strong> ${metricCell(rm, 'tackles')}</div>
-            <div class="stat-box"><strong>Pass %:</strong> ${rm.pass_cmp_pct ? Number(rm.pass_cmp_pct.value).toFixed(1) : '<span class="na">—</span>'}</div>
-            <div class="stat-box"><strong>Minutes:</strong> ${p.minutes || 0}</div>
-            <div class="stat-box"><strong>Wage:</strong> ${wageText(p)}<br><small>${wageBasis(p)}</small></div>
-            <div class="stat-box"><strong>Value:</strong> ${money(p.value_eur)}${p.value_as_of ? `<br><small>Transfermarkt, ${escapeHtml(p.value_as_of)}</small>` : ''}</div>
-            <div class="stat-box"><strong>Cost/yr:</strong> ${money(p.annual_book_cost_eur)}</div>
+            <div class="stat-box"><strong>Goals/90</strong> ${metricCell(rm, 'goals')}</div>
+            <div class="stat-box"><strong>Assists/90</strong> ${metricCell(rm, 'assists')}</div>
+            <div class="stat-box"><strong>Tackles/90</strong> ${metricCell(rm, 'tackles')}</div>
+            <div class="stat-box"><strong>Pass %</strong> ${rm.pass_cmp_pct ? Number(rm.pass_cmp_pct.value).toFixed(1) : '<span class="na">—</span>'}</div>
+            <div class="stat-box"><strong>Minutes</strong> ${p.minutes || 0}</div>
+            <div class="stat-box"><strong>Wage</strong> ${wageText(p)}<br><small>${wageBasis(p)}</small></div>
+            <div class="stat-box"><strong>Value</strong> ${money(p.value_eur)}${p.value_as_of ? `<br><small>Transfermarkt, ${escapeHtml(p.value_as_of)}</small>` : ''}</div>
+            <div class="stat-box"><strong>Cost/yr</strong> ${money(p.annual_book_cost_eur)}</div>
           </div>
 
           <div class="player-analysis">

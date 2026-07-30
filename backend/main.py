@@ -96,26 +96,45 @@ async def health_check():
 
 
 async def preflight() -> dict[str, dict]:
-    """Cheap liveness checks for Azure OpenAI and the player cache."""
+    """Cheap liveness checks for the configured LLM provider and the player cache."""
     import socket
     from urllib.parse import urlparse
 
     results: dict[str, dict] = {}
 
-    endpoint = settings.AZURE_OPENAI_ENDPOINT
+    # Check whichever provider is actually configured. Checking Azure while the
+    # pipeline runs on Groq reports a fatal-sounding failure that isn't real.
+    provider = settings.LLM_PROVIDER
+    if provider == "groq":
+        key_name, endpoint = "groq", settings.GROQ_BASE_URL
+        keys = settings.GROQ_API_KEYS
+        remedy = "Set GROQ_API_KEYS in .env (comma-separated to rotate)."
+    else:
+        key_name, endpoint = "azure_openai", settings.AZURE_OPENAI_ENDPOINT
+        keys = [settings.AZURE_OPENAI_API_KEY] if settings.AZURE_OPENAI_API_KEY else []
+        remedy = "Point AZURE_OPENAI_ENDPOINT at a live deployment in .env."
+
     host = urlparse(endpoint).hostname or ""
-    try:
-        await asyncio.get_running_loop().getaddrinfo(host, 443)
-        results["azure_openai"] = {"ok": True, "detail": f"{host} resolves"}
-    except (socket.gaierror, OSError) as exc:
-        results["azure_openai"] = {
+    if not keys:
+        results[key_name] = {
             "ok": False,
-            "detail": (
-                f"AZURE_OPENAI_ENDPOINT host '{host}' does not resolve ({exc}). "
-                "Every agent, the intent router and all RAG embeddings will fail. "
-                "Point AZURE_OPENAI_ENDPOINT at a live deployment in .env."
-            ),
+            "detail": f"no API key configured for provider '{provider}'. {remedy}",
         }
+    else:
+        try:
+            await asyncio.get_running_loop().getaddrinfo(host, 443)
+            results[key_name] = {
+                "ok": True,
+                "detail": f"{host} resolves, {len(keys)} key(s), model {settings.OPENAI_MODEL}",
+            }
+        except (socket.gaierror, OSError) as exc:
+            results[key_name] = {
+                "ok": False,
+                "detail": (
+                    f"host '{host}' does not resolve ({exc}). Every agent, the "
+                    f"intent router and all RAG embeddings will fail. {remedy}"
+                ),
+            }
 
     cache_db = settings.ROOT_DIR / "data" / "fbref_cache.db"
     if not cache_db.exists():
@@ -406,6 +425,9 @@ OUTPUT JSON SCHEMA:
                         "type": "final_ready",
                         "run_id": run_id,
                         "pdf_filename": Path(run_state.pdf_path).name,
+                        # The download panel prints this count; without it the
+                        # UI has to fall back to a vague "3+".
+                        "ranked_count": len(selected_players),
                         "langsmith_trace_url": trace_url,
                     })
                 except Exception as exc:
