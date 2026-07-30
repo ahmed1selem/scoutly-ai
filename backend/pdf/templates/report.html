@@ -355,11 +355,18 @@
 {% set shortlisted = fn.get('shortlisted', n) %}
 {% if fn.get('selection_failed') %}
   <div class="notice">
-    <b>The shortlist is empty because candidate selection failed{% if fn.get('selection_error') %}
+    <b>Candidate selection failed{% if fn.get('selection_error') %}
     ({{ fn.selection_error }}){% endif %}.</b>
-    {{ fn.cohort }} players were in the cohort and the budget filters were
-    applied, but the selection step did not return. This is a run failure, not a
-    verdict on the brief.
+    {% if fn.get('selection_fallback') %}
+      These {{ fn.selection_fallback }} candidates come from the deterministic
+      fit ranking over {{ fn.cohort }} players, which is how the shortlist is
+      ordered in any case — but without the written assessment the model
+      contributes. Re-run for that.
+    {% else %}
+      {{ fn.cohort }} players were in the cohort and the budget filters were
+      applied, but the selection step did not return. This is a run failure,
+      not a verdict on the brief.
+    {% endif %}
   </div>
 {% elif fn.get('cohort') and (shortlisted < 3 or n < shortlisted) %}
   <div class="notice">

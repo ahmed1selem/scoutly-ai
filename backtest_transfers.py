@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend" / "mcp_server"))
 
+from backend.agents.scouter import _SAME_LEAGUE_BONUS as SAME_LEAGUE_BONUS  # noqa: E402
 from backend.data_pipeline.club_names import fold, reconcile          # noqa: E402
 from backend.engine.fit_engine import compute_fit_verdict             # noqa: E402
 from backend.engine.trait_engine import compute_trait_scores          # noqa: E402
@@ -164,12 +165,21 @@ def find_transfers(players: list[dict], outcomes: dict[str, dict],
     return transfers
 
 
-def rank_within(player: dict, pool: list[dict], profile: dict) -> tuple[int, int, float]:
-    """Where this player would sit in a shortlist drawn from `pool`."""
+def rank_within(player: dict, pool: list[dict], profile: dict,
+                home_league: str = "", bonus: float = 0.0) -> tuple[int, int, float]:
+    """
+    Where this player would sit in a shortlist drawn from `pool`.
+
+    `bonus` mirrors the scouter's same-league preference so the ranking here is
+    the ranking the pipeline would actually produce.
+    """
     scored = []
     for other in pool:
         verdict = compute_fit_verdict(other, profile)
-        scored.append((other["name"], verdict.get("demonstrated_fit") or 0.0))
+        score = verdict.get("demonstrated_fit") or 0.0
+        if bonus and home_league and home_league.lower() in (other.get("league", "") or "").lower():
+            score += bonus
+        scored.append((other["name"], score))
     scored.sort(key=lambda kv: -kv[1])
     for idx, (name, fit) in enumerate(scored, start=1):
         if name == player["name"]:
@@ -223,7 +233,11 @@ def backtest(min_minutes: int = MIN_MINUTES, good_rating: float = GOOD_RATING,
                 if fold(p.get("squad", "")) != fold(t["_new_club"])]
 
         league_rank, league_n, _ = rank_within(t, in_league, profile)
-        big5_rank, big5_n, _ = rank_within(t, big5, profile)
+        # The scouter now ranks the whole Big 5 with a same-league bonus, so the
+        # pool that decides whether a player is ever seen is this one.
+        big5_rank, big5_n, _ = rank_within(
+            t, big5, profile,
+            home_league=buying_league, bonus=SAME_LEAGUE_BONUS)
         # Take the fit from its own verdict, not from rank_within: a player
         # outside the league pool is absent from that ranking and would report
         # a fit of zero when the score is perfectly well defined.
@@ -261,7 +275,7 @@ def backtest(min_minutes: int = MIN_MINUTES, good_rating: float = GOOD_RATING,
     return deduped
 
 
-def report(results: list[dict], top_n: int = 20) -> None:
+def report(results: list[dict], slate_size: int = 30) -> None:
     if not results:
         print("No qualifying transfers found.")
         return
@@ -279,25 +293,27 @@ def report(results: list[dict], top_n: int = 20) -> None:
               f"{outcome:>12s} {r['fit']:5.1f} {league:>18s} {big5:>16s}")
 
     n = len(results)
-    visible = [r for r in results if r["same_league"]]
-    cross = n - len(visible)
-    top_decile = [r for r in visible if r["league_pctile"] >= 90]
-    top_quartile = [r for r in visible if r["league_pctile"] >= 75]
-    big5_decile = [r for r in results if r["big5_pctile"] >= 90]
+    cross = sum(1 for r in results if not r["same_league"])
+    decile = [r for r in results if r["big5_pctile"] >= 90]
+    quartile = [r for r in results if r["big5_pctile"] >= 75]
+    # The slate the model is shown. A signing outside it was never a candidate.
+    in_slate = [r for r in results if r["big5_rank"] <= slate_size]
 
-    print(f"\n{n} successful summer-2025 signings scored.\n")
-    print(f"Of the {len(visible)} the scouter could actually reach "
-          f"(same league as the buyer):")
-    if visible:
-        print(f"  top decile of the cohort:   {len(top_decile)} "
-              f"({len(top_decile) / len(visible) * 100:.0f}%)")
-        print(f"  top quartile of the cohort: {len(top_quartile)} "
-              f"({len(top_quartile) / len(visible) * 100:.0f}%)")
-    print(f"\nThe other {cross} ({cross / n * 100:.0f}%) moved between leagues and "
-          f"the scouter never sees them:")
-    print(f"  it filters the cohort to the buying club's own league.")
-    print(f"  scored across the whole Big 5, {len(big5_decile)} of {n} "
-          f"({len(big5_decile) / n * 100:.0f}%) land in the top decile.")
+    print(f"\n{n} successful summer-2025 signings scored against the Big-5 cohort "
+          f"(same-league bonus {SAME_LEAGUE_BONUS:+.0f}).\n")
+    print(f"  top decile of the cohort:   {len(decile)} ({len(decile) / n * 100:.0f}%)")
+    print(f"  top quartile of the cohort: {len(quartile)} ({len(quartile) / n * 100:.0f}%)")
+    print(f"  inside the top {slate_size} the scouter prices and shows: "
+          f"{len(in_slate)} ({len(in_slate) / n * 100:.0f}%)")
+    print(f"\n  {cross} of {n} ({cross / n * 100:.0f}%) were cross-league moves, "
+          f"all of them unreachable before the league gate became a preference.")
+    if cross:
+        same_r = [r["outcome_rating"] for r in results if r["same_league"]]
+        cross_r = [r["outcome_rating"] for r in results if not r["same_league"]]
+        if same_r and cross_r:
+            print(f"  their 2025-26 ratings: {sum(cross_r) / len(cross_r):.3f} "
+                  f"against {sum(same_r) / len(same_r):.3f} for same-league "
+                  f"signings — no penalty for shopping abroad.")
 
 
 def correlate(min_minutes: int = 900) -> None:

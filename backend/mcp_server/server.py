@@ -889,15 +889,17 @@ async def get_position_cohort(
         season:      Season code, e.g. "2425" for 2024-25 (default).
         league:      Optional league filter, e.g. "Premier League" or "La Liga".
                      Leave empty to search the full Big 5.
-        limit:       Maximum players to return (default 40). Keep this bounded —
-                     the caller feeds the result to an LLM with a finite context.
+        limit:       Maximum players to return (default 40, hard cap 500). A
+                     caller that forwards the result straight to an LLM should
+                     keep this small; the scouter ranks locally first and only
+                     sends the top of the list, so it asks for far more.
         min_minutes: Drop players below this many minutes played (default 450).
         max_age:     Inclusive upper age bound. "Under 27" is max_age=26.
         min_age:     Inclusive lower age bound.
     """
     import pandas as pd
 
-    limit = max(1, min(int(limit), 200))
+    limit = max(1, min(int(limit), 500))
     min_minutes = max(0, int(min_minutes))
 
     def _within_age(player: dict) -> bool:

@@ -9,8 +9,24 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 from .base import BaseAgent
+from ..engine.fit_engine import compute_fit_verdict
 from ..utils.config import settings
 from ..utils.prompt_loader import PromptLoader
+
+#: Fit points added to a candidate already playing in the buying club's league.
+#:
+#: Deliberately tiny, and the number is measured rather than chosen. Sweeping it
+#: against the 2025-26 outcomes of 220 real transfers, every increase costs
+#: predictive accuracy — Spearman rho against match rating falls monotonically
+#: from +0.300 at zero to +0.262 at 5 and +0.198 at 12. Cross-league signings
+#: also outperformed same-league ones that season (6.865 against 6.806, t=-2.0),
+#: so there is no performance premium here to encode.
+#:
+#: It stays because a same-league signing carries less adaptation risk and an
+#: easier deal, which is a real preference — but at 1.0 point on a scale where
+#: fits span roughly 20-70 it only ever breaks a tie, at a cost of 0.005 rho.
+#: Raising it trades measurable accuracy for a preference the data contradicts.
+_SAME_LEAGUE_BONUS = 1.0
 
 
 # FBref abbreviates squad names; club profiles spell them out.
@@ -189,7 +205,15 @@ class ScouterAgent(BaseAgent):
         # cohort tool can return hundreds, and the selection prompt has to fit
         # not just the context window but the provider's per-minute token budget
         # (Groq's free tier allows 12k tokens/minute across all requests).
-        COHORT_LIMIT = 40
+        # The cohort is drawn across the whole Big 5, not the buying club's
+        # league. A backtest of 327 real summer-2025 transfers found 51% of the
+        # successful ones moved between leagues — Zubimendi to Arsenal, Huijsen
+        # to Real Madrid, Cherki to Manchester City — and a league gate made
+        # every one of them unreachable. Huijsen scores in the 96th percentile
+        # of the Big-5 centre-back cohort for Real Madrid.
+        COHORT_LIMIT = 300
+        #: Candidates worth paying for a valuation lookup, taken by fit.
+        VALUATION_LIMIT = 30
         SELECTION_LIMIT = 20
 
         async def _resolve_wage(player: dict, fallback_league: str = "") -> None:
@@ -249,6 +273,7 @@ class ScouterAgent(BaseAgent):
 
         # ── Step 1: Club profile from vector DB ───────────────────────────────
         club_league = ""
+        club_data: dict = {}
         club_traits: dict = {}
         if target_club:
             try:
@@ -308,8 +333,8 @@ class ScouterAgent(BaseAgent):
         elif min_age:
             age_note = f", age from {min_age}"
         await self.emit_progress(
-            f"Target position: {target_position}, "
-            f"league filter: {club_league or 'all Big 5'}{age_note}"
+            f"Target position: {target_position}, searching all Big 5"
+            f"{f' (preferring {club_league})' if club_league else ''}{age_note}"
         )
 
         # ── Step 3: Fetch cohort directly via MCP ─────────────────────────────
@@ -320,7 +345,9 @@ class ScouterAgent(BaseAgent):
                 {
                     "position":    target_position,
                     "season":      "2425",
-                    "league":      club_league,
+                    # No league filter: the buyer's own league is a preference
+                    # applied when ranking, not a wall around the market.
+                    "league":      "",
                     "limit":       COHORT_LIMIT,
                     "min_minutes": 450,
                     "max_age":     max_age,
@@ -418,8 +445,48 @@ class ScouterAgent(BaseAgent):
                 },
             }
 
-        # Rank by minutes played, then hand the model a bounded slate.
-        slate = sorted(cohort, key=lambda p: p.get("minutes", 0), reverse=True)[:SELECTION_LIMIT]
+        # Rank by how well each player meets THIS club's requirement, then hand
+        # the model a bounded slate.
+        #
+        # This used to sort by minutes played, which selected the most durable
+        # players in the cohort rather than the best-suited ones — and since the
+        # cohort was capped, a strong fit outside the top 20 by minutes never
+        # reached the model at all. The fit engine is deterministic and free, so
+        # there is no reason to defer it until after the shortlist is fixed.
+        _fit_cache: dict[int, float] = {}
+
+        def _ranking_score(player: dict) -> float:
+            key = id(player)
+            if key not in _fit_cache:
+                score = 0.0
+                if club_data:
+                    try:
+                        verdict = compute_fit_verdict(player, club_data)
+                        score = float(verdict.get("demonstrated_fit") or 0.0)
+                    except Exception:
+                        score = 0.0
+                if not score:
+                    # No club profile, or nothing measurable: fall back to the
+                    # old ordering so the slate is never arbitrary.
+                    score = min(float(player.get("minutes", 0) or 0) / 100.0, 34.0)
+                # Same-league players are proven against the same opposition and
+                # carry no adaptation risk, which is worth a nudge — but not
+                # enough to keep a clearly better fit abroad out of the slate.
+                if club_league and club_league.lower() in (player.get("league", "") or "").lower():
+                    score += _SAME_LEAGUE_BONUS
+                _fit_cache[key] = score
+            return _fit_cache[key]
+
+        ranked = sorted(cohort, key=_ranking_score, reverse=True)
+        home = sum(1 for p in ranked[:VALUATION_LIMIT]
+                   if club_league and club_league.lower() in (p.get("league", "") or "").lower())
+        await self.emit_progress(
+            f"Ranked {len(cohort)} Big-5 candidates by fit to {target_club or 'the club'}; "
+            f"pricing the top {min(VALUATION_LIMIT, len(ranked))} "
+            f"({home} from {club_league or 'the same league'}, "
+            f"{min(VALUATION_LIMIT, len(ranked)) - home} from abroad)"
+        )
+        slate = ranked[:VALUATION_LIMIT]
 
         # ── Fee ceiling: a hard filter, applied BEFORE the model sees anyone ──
         # A transfer fee is as much a constraint as the position. Recommending a
@@ -490,6 +557,12 @@ class ScouterAgent(BaseAgent):
             )
             return {"players": [], "reason": "no candidate within the wage budget"}
 
+        # More candidates are valued than are shown: valuing 30 costs seconds,
+        # while every extra player in the prompt costs tokens against a daily
+        # cap. Those that survived both ceilings are already ordered by fit.
+        if len(slate) > SELECTION_LIMIT:
+            slate = slate[:SELECTION_LIMIT]
+
         if len(slate) < len(cohort):
             await self.emit_progress(
                 f"Presenting the {len(slate)} strongest affordable candidates to the model "
@@ -546,14 +619,25 @@ class ScouterAgent(BaseAgent):
             selected  = result.get("players", [])
         except Exception as exc:
             await self.emit_error("LLM selection failed", str(exc))
-            selected = []
-            # Without this the funnel reports an empty shortlist with the
-            # budget exclusions as the only visible cause, and a rate-limited
-            # run reads exactly like a brief nobody could satisfy. Rayo
-            # Vallecano's benchmark run lost 25 affordable goalkeepers here and
-            # the report said only that 6 were over the fee ceiling.
+            # Fall back to the deterministic ranking rather than returning
+            # nothing. `slate` is already ordered by fit to this club and has
+            # passed both ceilings, so the top of it is a defensible shortlist —
+            # and the model's only contribution beyond that ordering is the
+            # scout note. A whole run was being thrown away over a rate limit.
+            selected = [{"name": p.get("name", "")} for p in slate[:5]]
+            # Recorded either way: without it the funnel reports an empty or
+            # unexplained shortlist with the budget exclusions as the only
+            # visible cause, and a rate-limited run reads exactly like a brief
+            # nobody could satisfy. Rayo Vallecano's benchmark run lost 25
+            # affordable goalkeepers here and the report said only that 6 were
+            # over the fee ceiling.
             funnel["selection_failed"] = True
             funnel["selection_error"] = type(exc).__name__
+            funnel["selection_fallback"] = len(selected)
+            await self.emit_progress(
+                f"Falling back to the deterministic fit ranking: "
+                f"{len(selected)} candidate(s) carried forward without a model note"
+            )
 
         # Rehydrate from the cohort so stats are the cache's, not the model's.
         # The LLM only chooses names and writes the note; it cannot invent a

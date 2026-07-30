@@ -466,14 +466,19 @@ function renderFunnelHtml(fn, club) {
   }
   if (fn.over_wage_on_confirmation) bits.push(`${fn.over_wage_on_confirmation} dropped once a confirmed wage exceeded the ceiling`);
 
-  // A failed selection call empties the shortlist without any of the filters
-  // above accounting for it. Saying so beats blaming the budget.
+  // A failed selection call is not accounted for by any filter above. Saying so
+  // beats blaming the budget for a shortlist the budget did not produce.
   if (fn.selection_failed) {
+    const fallback = fn.selection_fallback || 0;
     return `<div class="funnel-note">
-      <b>The shortlist is empty because candidate selection failed${fn.selection_error ? ` (${escapeHtml(fn.selection_error)})` : ''}.</b>
-      ${fn.cohort} players were in the cohort and the budget filters were applied,
-      but the selection step did not return. This is a run failure, not a verdict
-      on the brief — try again.
+      <b>Candidate selection failed${fn.selection_error ? ` (${escapeHtml(fn.selection_error)})` : ''}.</b>
+      ${fallback
+        ? `These ${fallback} come from the deterministic fit ranking over ${fn.cohort} players,
+           which is how the shortlist is ordered anyway — but without the model's
+           scout note. Re-run for the written assessment.`
+        : `${fn.cohort} players were in the cohort and the budget filters were applied,
+           but the selection step did not return. This is a run failure, not a
+           verdict on the brief — try again.`}
     </div>`;
   }
 
