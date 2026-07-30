@@ -1,18 +1,33 @@
 """
-MCP Server — FastMCP-powered player database + FBref live data.
+MCP Server — FastMCP-powered player database, served from a pre-built cache.
 
 Tools:
   - search_players / get_player_stats / query_players / list_positions  (SQLite)
-  - get_position_cohort       real FBref cohort (falls back to mock on any error)
-  - get_enriched_player_stats per-player passing/possession/GCA enrichment
+  - get_position_cohort       position cohort with per-90 stats + percentiles
+  - get_enriched_player_stats per-player deep metrics
+  - get_player_salary         weekly wage, real → league median → default
   - get_fbref_player_stats    single-player FBref lookup
 
-Set FBREF_USE_MOCK=true to skip ScraperFC entirely (container deployments without Chrome).
+## Data policy — the database is populated ONCE, offline
+
+Serving a request never scrapes. All FBref/Capology traffic happens in the
+one-time builder:
+
+    python -m backend.data_pipeline.cache_builder
+
+which writes data/fbref_cache.db (player_cohort + player_wages). Every tool
+below reads from that file. This keeps requests at ~0.1 s instead of minutes,
+and means no Chrome process is ever spawned while answering a query.
+
+Escape hatches (both default to OFF — leave them off in normal operation):
+  FBREF_LIVE_SCRAPE=true  allow tools to hit FBref when the cache misses
+  FBREF_USE_MOCK=true     skip ScraperFC entirely, even in the builder
 """
 import json
 import os
 import re
 import sys
+import unicodedata
 import logging
 from pathlib import Path
 from typing import Optional
@@ -49,16 +64,169 @@ _db_path_raw = os.getenv("SQLITE_DB_PATH", "data/football.db")
 DB_PATH = str((_root / _db_path_raw) if not Path(_db_path_raw).is_absolute() else Path(_db_path_raw))
 MCP_PORT = int(os.getenv("MCP_SERVER_PORT", "8005"))
 
-# Pre-built FBref cache (committed to repo, refreshed weekly by GitHub Actions)
+# Pre-built cache written by backend/data_pipeline/cache_builder.py
 _FBREF_CACHE_DB = str(_root / "data" / "fbref_cache.db")
 
+# Live scraping is off by default — the cache is built once, offline.
+def _live_scrape_allowed() -> bool:
+    return os.getenv("FBREF_LIVE_SCRAPE", "false").lower() == "true"
 
-def _get_cohort_from_sqlite_cache(
-    position: str, season: str, league: str
-) -> str | None:
+
+# Metrics carried in every cached player's raw_metrics block.
+STAT_KEYS = [
+    "goals", "assists", "xg", "xa", "shots", "shots_on_target",
+    "prg_passes", "prg_carries", "att_pen_touches",
+    "tackles", "interceptions", "pass_cmp_pct", "sca", "gca",
+    # From Sofascore — these are what make goalkeeper and midfielder briefs
+    # scorable, so they must be ranked like any other metric. Percentages are
+    # listed too: percentile ranks are still useful for the *_pct fields even
+    # though the trait engine reads their raw value.
+    "duels_won_pct", "ground_duels_won_pct", "aerial_won_pct", "tackles_won_pct",
+    "dribble_success_pct", "clearances", "key_passes", "big_chances_created",
+    "saves", "possession_won_att_third",
+]
+
+# Weekly-wage fallbacks by league and playing-time tier (EUR/week). Used only
+# when the builder found no real Capology figure for a player.
+_WAGE_FALLBACK = {
+    "premier league": {"starter": 55_000, "rotation": 28_000, "fringe": 12_000},
+    "la liga":        {"starter": 45_000, "rotation": 22_000, "fringe": 10_000},
+    "serie a":        {"starter": 38_000, "rotation": 18_000, "fringe":  8_000},
+    "bundesliga":     {"starter": 38_000, "rotation": 18_000, "fringe":  8_000},
+    "ligue 1":        {"starter": 30_000, "rotation": 15_000, "fringe":  7_000},
+}
+_WAGE_DEFAULT = {"starter": 30_000, "rotation": 15_000, "fringe": 7_000}
+
+
+def _normalise_name(name: str) -> str:
     """
-    Check the pre-built fbref_cache.db for position cohort data.
-    Returns JSON string (same format as get_position_cohort) or None.
+    Fold a player name to a diacritic-free, lowercase key.
+
+    FBref and Capology disagree on accents ("Milenković" vs "Milenkovic"), and
+    callers routinely type the ASCII form. Matching on the folded key stops a
+    lookup missing purely because of an accent.
+    """
+    decomposed = unicodedata.normalize("NFKD", str(name))
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return " ".join(stripped.lower().split())
+
+
+# ── Wage from market value ────────────────────────────────────────────────────
+# Market value predicts wage far better than a league/minutes tier does: a €70M
+# player is not on the same money as a €13M squad member even at the same club
+# with the same minutes. The league-tier model put every Premier League starter
+# near €55,000/wk, which is a mid-table squad wage — Joško Gvardiol's reported
+# range is £200,000-250,000.
+#
+# Wage rises sub-linearly with value (a fee can triple while wages do not), so a
+# power curve fits: weekly ≈ COEF × value^EXP. Calibrated on published Premier
+# League figures:
+#     €13M  → ~€82,000/wk      €70M  → ~€250,000/wk     €220M → ~€440,000/wk
+_WAGE_VALUE_COEF = 4.85
+_WAGE_VALUE_EXP = 0.594
+
+# Anchors are Premier League. Other leagues pay materially less for an equivalent
+# valuation — calibrated against Bastoni (€70M, Serie A, ~€110k/wk) and Theate
+# (€25M, Ligue 1, ~€40k/wk), both of which the PL curve over-estimated by ~60%.
+_LEAGUE_WAGE_FACTOR = {
+    "premier league": 1.00,
+    "la liga":        0.70,
+    "serie a":        0.55,
+    "bundesliga":     0.60,
+    "ligue 1":        0.40,
+}
+#: Reported wages are ranges, not points. ±25% brackets the usual spread between
+#: base salary and the figures the press quotes (which often include bonuses).
+_WAGE_RANGE_SPREAD = 0.25
+
+
+def estimate_wage_from_value(value_eur: float, league: str = "") -> tuple[int, int, int]:
+    """
+    Estimate a weekly wage band from a market value.
+
+    Returns (low, mid, high) in EUR per week, rounded so the numbers never read
+    as a precise contract figure. Returns zeros when there is no valuation to
+    work from, so callers can fall back rather than publish a made-up figure.
+    """
+    if not value_eur or value_eur <= 0:
+        return (0, 0, 0)
+
+    factor = next(
+        (v for k, v in _LEAGUE_WAGE_FACTOR.items() if k in (league or "").lower()), 0.75
+    )
+    mid = _WAGE_VALUE_COEF * (float(value_eur) ** _WAGE_VALUE_EXP) * factor
+
+    def _round(x: float) -> int:
+        step = 5_000 if x >= 100_000 else 1_000
+        return int(round(x / step) * step)
+
+    return (
+        _round(mid * (1 - _WAGE_RANGE_SPREAD)),
+        _round(mid),
+        _round(mid * (1 + _WAGE_RANGE_SPREAD)),
+    )
+
+
+def _tier_for_minutes(minutes: int) -> str:
+    return "starter" if minutes >= 1800 else "rotation" if minutes >= 900 else "fringe"
+
+
+def _estimate_wage(league: str, minutes: int, age: int = 0) -> int:
+    """
+    Estimate a weekly wage from league, playing time and age.
+
+    A three-bucket tier alone gave every Premier League starter the identical
+    figure, which read as a precise fact repeated five times rather than as the
+    rough band it is. Scaling continuously within the tier and applying an age
+    curve keeps the estimate honest and differentiated: wages rise steeply to a
+    peak around 27-30 and taper after.
+    """
+    league_key = (league or "").lower()
+    table = next((v for k, v in _WAGE_FALLBACK.items() if k in league_key), _WAGE_DEFAULT)
+    base = table[_tier_for_minutes(minutes)]
+
+    # Within-tier scaling: 1800 min is the floor of "starter", 3420 a full season.
+    minutes_factor = 0.85 + 0.30 * min(max(minutes, 0) / 3420, 1.0)
+
+    if not age:
+        age_factor = 1.0
+    elif age <= 21:
+        age_factor = 0.65
+    elif age <= 24:
+        age_factor = 0.85
+    elif age <= 30:
+        age_factor = 1.10
+    elif age <= 33:
+        age_factor = 1.0
+    else:
+        age_factor = 0.80
+
+    estimate = base * minutes_factor * age_factor
+    # Round to the nearest 500 so it never looks like a precise contract figure.
+    return int(round(estimate / 500) * 500)
+
+
+def _recompute_percentiles(players: list[dict]) -> None:
+    """Rank every metric within the passed cohort, in place (0-100, higher = better)."""
+    import numpy as _np
+
+    for key in STAT_KEYS:
+        vals = [p.get("raw_metrics", {}).get(key, {}).get("per90", 0) for p in players]
+        arr = _np.array(vals, dtype=float)
+        if arr.max() == 0:
+            continue
+        ranks = (arr.argsort().argsort() / max(len(arr) - 1, 1) * 100).round().astype(int)
+        for p, pct in zip(players, ranks):
+            if key in p.get("raw_metrics", {}):
+                p["raw_metrics"][key]["percentile"] = int(pct)
+
+
+def _load_cohort_from_cache(position: str, season: str, league: str) -> list[dict] | None:
+    """
+    Read the full position cohort out of the pre-built cache.
+
+    Returns every matching player (no cap) so percentiles are computed against
+    the real population; callers trim afterwards.
     """
     import sqlite3 as _sqlite3
 
@@ -76,71 +244,137 @@ def _get_cohort_from_sqlite_cache(
             (season, pos_upper, f"{pos_upper},%", f"%,{pos_upper}"),
         ).fetchall()
         conn.close()
-
-        if not rows:
-            return None
-
-        players = [json.loads(r[0]) for r in rows]
-
-        # Optional league filter
-        if league:
-            filtered = [
-                p for p in players
-                if league.lower() in p.get("league", "").lower()
-            ]
-            if filtered:
-                players = filtered
-
-        # Recompute percentiles within this filtered cohort
-        import numpy as _np
-        STAT_KEYS = [
-            "goals", "assists", "xg", "xa", "shots", "shots_on_target",
-            "prg_passes", "prg_carries", "att_pen_touches",
-            "tackles", "interceptions", "pass_cmp_pct", "sca", "gca",
-        ]
-        for key in STAT_KEYS:
-            vals = [p["raw_metrics"].get(key, {}).get("per90", 0) for p in players]
-            arr  = _np.array(vals, dtype=float)
-            if arr.max() == 0:
-                continue
-            ranks = (
-                arr.argsort().argsort() / max(len(arr) - 1, 1) * 100
-            ).round().astype(int)
-            for p, pct in zip(players, ranks):
-                if key in p.get("raw_metrics", {}):
-                    p["raw_metrics"][key]["percentile"] = int(pct)
-
-        # Return ALL players from cache — no 15-player cap here.
-        # The scouter's LLM selection step picks the best 3-5 from the full list.
-        players_sorted = sorted(players, key=lambda p: p.get("minutes", 0), reverse=True)
-        logger.info(
-            f"SQLite cache HIT: pos={position} league={league or 'all'} season={season} "
-            f"→ {len(players_sorted)} players"
-        )
-        return json.dumps(players_sorted)
     except Exception as exc:
         logger.warning(f"SQLite cache lookup failed: {exc}")
         return None
 
+    if not rows:
+        return None
+
+    players = [json.loads(r[0]) for r in rows]
+
+    if league:
+        filtered = [p for p in players if league.lower() in p.get("league", "").lower()]
+        if filtered:
+            players = filtered
+        else:
+            logger.warning(f"League filter '{league}' matched no cached players — ignoring filter")
+
+    # Percentiles are meaningful only relative to the cohort actually returned.
+    _recompute_percentiles(players)
+    return sorted(players, key=lambda p: p.get("minutes", 0), reverse=True)
+
+
 def _get_wages_from_cache(player_names: list[str], season: str) -> dict[str, int]:
     """
-    Look up real wages from player_wages table for a list of players.
-    Returns {player_name: wage_eur} for any names found.
+    Look up real wages from the player_wages table.
+    Returns {normalised_name: wage_eur} for every name found.
     """
     import sqlite3 as _sqlite3
-    if not Path(_FBREF_CACHE_DB).exists():
+
+    if not Path(_FBREF_CACHE_DB).exists() or not player_names:
         return {}
+    wanted = {_normalise_name(n) for n in player_names}
     try:
         conn = _sqlite3.connect(_FBREF_CACHE_DB)
-        placeholders = ",".join("?" for _ in player_names)
         rows = conn.execute(
-            f"SELECT name, wage_eur FROM player_wages WHERE season = ? AND name IN ({placeholders})",
-            (season, *player_names),
+            "SELECT name, wage_eur FROM player_wages WHERE season = ?", (season,)
         ).fetchall()
         conn.close()
-        return {name: wage for name, wage in rows if wage}
-    except Exception:
+    except Exception as exc:
+        logger.warning(f"Wage cache lookup failed: {exc}")
         return {}
+
+    found: dict[str, int] = {}
+    for name, wage in rows:
+        key = _normalise_name(name)
+        if key in wanted and wage:
+            found[key] = int(wage)
+    return found
+
+
+def _league_median_wage(league: str, season: str) -> int | None:
+    """Median weekly wage actually observed in a league, from the wage cache."""
+    import sqlite3 as _sqlite3
+    import statistics
+
+    if not Path(_FBREF_CACHE_DB).exists() or not league:
+        return None
+    try:
+        conn = _sqlite3.connect(_FBREF_CACHE_DB)
+        rows = conn.execute(
+            "SELECT wage_eur FROM player_wages "
+            "WHERE season = ? AND LOWER(league) = LOWER(?) AND wage_eur > 0",
+            (season, league),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return None
+    wages = [r[0] for r in rows if r[0]]
+    return int(statistics.median(wages)) if wages else None
+
+
+def _cached_market_value(player_name: str, player: dict | None) -> float:
+    """
+    Read a Transfermarkt valuation out of the market-value cache, if present.
+
+    Lets the wage estimate use a valuation the pipeline already fetched, without
+    making a second network call from inside the salary tool.
+    """
+    import sqlite3 as _sqlite3
+
+    if not Path(_FBREF_CACHE_DB).exists():
+        return 0.0
+    squad = (player or {}).get("squad", "")
+    key = _normalise_name(f"{player_name}|{squad}")
+    try:
+        conn = _sqlite3.connect(_FBREF_CACHE_DB)
+        try:
+            row = conn.execute(
+                "SELECT payload FROM player_market_value WHERE name_key = ?", (key,)
+            ).fetchone()
+        except _sqlite3.OperationalError:
+            return 0.0   # table not created yet
+        finally:
+            conn.close()
+    except Exception:
+        return 0.0
+    if not row:
+        return 0.0
+    try:
+        return float(json.loads(row[0]).get("market_value_eur") or 0)
+    except Exception:
+        return 0.0
+
+
+def _find_cached_player(player_name: str, season: str) -> dict | None:
+    """Find one cached player by name, tolerant of accents and partial names."""
+    import sqlite3 as _sqlite3
+
+    if not Path(_FBREF_CACHE_DB).exists():
+        return None
+    try:
+        conn = _sqlite3.connect(_FBREF_CACHE_DB)
+        rows = conn.execute(
+            "SELECT name, raw_data FROM player_cohort WHERE season = ?", (season,)
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"Player cache lookup failed: {exc}")
+        return None
+
+    target = _normalise_name(player_name)
+    if not target:
+        return None
+
+    partial: dict | None = None
+    for name, raw in rows:
+        key = _normalise_name(name)
+        if key == target:
+            return json.loads(raw)
+        if partial is None and (target in key or key in target):
+            partial = json.loads(raw)
+    return partial
 
 
 mcp = FastMCP("Scoutly Unified MCP Server")
@@ -280,12 +514,23 @@ async def get_fbref_player_stats(player_name: str, season: str = "2425", stat_ty
         season: The season to query. E.g., "2425" for 2024-2025. Defaults to "2425".
         stat_type: "standard", "shooting", "passing", "defense", or "possession".
     """
+    # Prefer the pre-built cache; it covers every Big-5 player and costs nothing.
+    cached = _find_cached_player(player_name, season)
+    if cached:
+        return json.dumps([cached], default=str)
+
+    if not _live_scrape_allowed():
+        return json.dumps([{
+            "message": f"'{player_name}' not in cache and live scraping is disabled. "
+                       "Run `python -m backend.data_pipeline.cache_builder` to populate it."
+        }])
+
     try:
         # FBref from ScraperFC uses format like "2024-2025"
         s = season
         if len(s) == 4 and s.isdigit():
             s = f"20{s[:2]}-20{s[2:]}"
-            
+
         fbref = FBref()
         stats_dict = await _scrape(fbref, s, "FBref Big 5 Combined", stat_type)
 
@@ -333,14 +578,26 @@ async def search_fbref_players(
     season: str = "2425"
 ) -> str:
     """
-    Search for players natively in FBref by position and age. Returns a list of matching players.
-    This fetches the player cohort from FBref directly.
+    Search for players by position and age.
+
+    Deprecated — prefer `get_position_cohort`, which serves the same data from the
+    pre-built cache with per-90 values and percentile ranks already computed.
     """
+    if not _live_scrape_allowed():
+        cohort = json.loads(
+            await get_position_cohort(position=position or "FW", season=season, limit=200)
+        )
+        if min_age is not None:
+            cohort = [p for p in cohort if int(p.get("age", 0)) >= min_age]
+        if max_age is not None:
+            cohort = [p for p in cohort if int(p.get("age", 0)) <= max_age]
+        return json.dumps(cohort[:limit], default=str)
+
     try:
         s = season
         if len(s) == 4 and s.isdigit():
             s = f"20{s[:2]}-20{s[2:]}"
-            
+
         fbref = FBref()
         stats_dict = await _scrape(fbref, s, "FBref Big 5 Combined", "standard")
 
@@ -561,11 +818,16 @@ import time as _time
 _COHORT_CACHE: dict[tuple, tuple[float, str]] = {}
 _COHORT_TTL = 6 * 3600  # 6 hours — FBref squad data barely changes intra-day
 
-async def _scrape(fbref_obj, year: str, league: str, cat: str, timeout: int = 60) -> dict:
+async def _scrape(fbref_obj, year: str, league: str, cat: str, timeout: int = 300) -> dict:
     """
     Run a synchronous ScraperFC scrape_stats call in a thread with a hard timeout.
     ScraperFC uses botasaurus (headless Chrome) which can hang waiting for user
     input on error — this wrapper ensures it always exits within `timeout` seconds.
+
+    A full Big-5 combined table takes 110-140 s to fetch, so the default is 300 s.
+    Anything shorter times out on healthy responses and looks like a scraper failure.
+    Note: shutting the pool down with wait=False abandons the worker thread, which
+    can leave its headless Chrome behind — another reason to scrape only offline.
     """
     loop = _asyncio.get_event_loop()
     pool = _futures.ThreadPoolExecutor(max_workers=1)
@@ -609,40 +871,67 @@ async def get_position_cohort(
     position: str,
     season: str = "2425",
     league: str = "",
+    limit: int = 40,
+    min_minutes: int = 450,
 ) -> str:
     """
-    Return the top-15 cohort for a position from FBref with per-90 stats and percentile ranks.
+    Return the strongest candidates at a position, with per-90 stats and percentile ranks.
 
-    Merges standard + defensive tables so that tackles and interceptions are
-    populated alongside goals, assists, xG, progressive passes/carries.
+    Served from the pre-built cache (data/fbref_cache.db). Percentiles are computed
+    across the FULL position cohort first, then the list is trimmed to `limit`, so a
+    trimmed player's percentile still reflects their standing among all peers.
 
     Args:
-        position: FBref position code — DF (defenders), MF (midfielders), FW (forwards), GK.
-                  Partial matches accepted (e.g. "DF" also matches "DF,MF").
-        season:   Season code, e.g. "2425" for 2024-25 (default).
-        league:   Optional league filter, e.g. "Premier League" or "La Liga".
-                  When set, only players from that league are returned.
-                  Leave empty to search the full Big 5.
+        position:    FBref position code — DF (defenders), MF (midfielders),
+                     FW (forwards), GK. Partial matches accepted ("DF" matches "DF,MF").
+        season:      Season code, e.g. "2425" for 2024-25 (default).
+        league:      Optional league filter, e.g. "Premier League" or "La Liga".
+                     Leave empty to search the full Big 5.
+        limit:       Maximum players to return (default 40). Keep this bounded —
+                     the caller feeds the result to an LLM with a finite context.
+        min_minutes: Drop players below this many minutes played (default 450).
     """
     import pandas as pd
 
-    # ── Cache check ───────────────────────────────────────────────────────────
-    cache_key = (position.upper(), season, league.lower())
+    limit = max(1, min(int(limit), 200))
+    min_minutes = max(0, int(min_minutes))
+
+    def _trim(players: list[dict]) -> str:
+        eligible = [p for p in players if int(p.get("minutes", 0)) >= min_minutes]
+        if not eligible:
+            logger.warning(
+                f"min_minutes={min_minutes} excluded all {len(players)} players — ignoring filter"
+            )
+            eligible = players
+        selected = sorted(eligible, key=lambda p: p.get("minutes", 0), reverse=True)[:limit]
+        logger.info(
+            f"get_position_cohort: pos={position} league={league or 'all'} "
+            f"→ {len(players)} cached, {len(eligible)} eligible, {len(selected)} returned"
+        )
+        return json.dumps(selected, default=str)
+
+    # ── In-process memo ───────────────────────────────────────────────────────
+    cache_key = (position.upper(), season, league.lower(), limit, min_minutes)
     if cache_key in _COHORT_CACHE:
         ts, cached = _COHORT_CACHE[cache_key]
         if _time.time() - ts < _COHORT_TTL:
-            logger.info(f"get_position_cohort cache HIT: {cache_key}")
+            logger.info(f"get_position_cohort memo HIT: {cache_key}")
             return cached
-    logger.info(f"get_position_cohort cache MISS: {cache_key}")
 
-    # ── SQLite pre-built cache (fastest path — no Chrome needed) ─────────────
-    cached_json = _get_cohort_from_sqlite_cache(position, season, league)
-    if cached_json is not None:
-        _COHORT_CACHE[cache_key] = (_time.time(), cached_json)
-        return cached_json
+    # ── Pre-built SQLite cache — the normal path, no Chrome, no network ───────
+    cached_players = _load_cohort_from_cache(position, season, league)
+    if cached_players:
+        result_json = _trim(cached_players)
+        _COHORT_CACHE[cache_key] = (_time.time(), result_json)
+        return result_json
 
     try:
-        # Skip FBref scrape when: FBREF_USE_MOCK=true (container), or ScraperFC failed to import.
+        # The cache is built offline; live scraping is opt-in only.
+        if not _live_scrape_allowed():
+            raise RuntimeError(
+                "cache miss and FBREF_LIVE_SCRAPE is off — "
+                "run `python -m backend.data_pipeline.cache_builder` to populate the cache"
+            )
         if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" or not _SCRAPERFC_OK:
             reason = "FBREF_USE_MOCK=true" if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" else "ScraperFC unavailable"
             logger.info(f"Skipping FBref scrape ({reason}) — using mock cohort")
@@ -730,12 +1019,22 @@ async def get_position_cohort(
             else:
                 logger.warning(f"League filter '{league}' matched no players — ignoring filter")
 
-        # ── Min minutes + top-15 cap ──────────────────────────────────────────
+        # ── Min minutes ───────────────────────────────────────────────────────
+        # Low-minute players are dropped before percentiles are computed, so a
+        # cameo appearance can't distort the ranks. No cap here — _trim() applies
+        # `limit` once the ranks are in place.
         min_col = col_map["minutes"]
         df[min_col] = pd.to_numeric(df[min_col], errors="coerce").fillna(0)
-        df = df[df[min_col] >= 450].copy()
-        df = df.sort_values(by=min_col, ascending=False).head(15)
-        
+        eligible = df[df[min_col] >= min_minutes]
+        if eligible.empty:
+            logger.warning(
+                f"min_minutes={min_minutes} excluded all {len(df)} players — ignoring filter"
+            )
+        else:
+            df = eligible
+        df = df.copy().sort_values(by=min_col, ascending=False)
+
+
         def _safe_float(val) -> float:
             try:
                 return float(val) if pd.notna(val) else 0.0
@@ -792,168 +1091,232 @@ async def get_position_cohort(
                     if key in p["raw_metrics"]:
                         p["raw_metrics"][key]["percentile"] = int(pct)
 
-        result_json = json.dumps(players, default=str)
+        result_json = _trim(players)
         _COHORT_CACHE[cache_key] = (_time.time(), result_json)
         return result_json
 
     except Exception as exc:
-        logger.error(f"get_position_cohort error: {exc}")
-        err_str = str(exc)
-        # Always fall back to mock cohort — any FBref failure (403, parse error,
-        # missing columns, timeout, etc.) should not crash the pipeline.
-        if True:
-            # Return mock cohort with pre-computed percentiles
-            pos_upper = position.upper()
-            mock_key = next(
-                (k for k in _MOCK_COHORT if k in pos_upper or pos_upper in k), "FW"
-            )
-            cohort = _MOCK_COHORT.get(mock_key, _MOCK_COHORT["FW"])
-            STAT_COLS_MOCK = ["goals", "assists", "xg", "xa", "shots",
-                              "shots_on_target", "prg_passes", "prg_carries",
-                              "att_pen_touches", "tackles", "interceptions",
-                              "pass_cmp_pct"]
-            import numpy as np
-            players = []
-            for p in cohort:
-                mins = float(p.get("minutes", 0))
-                nineties = mins / 90 if mins > 0 else 0.001
-                rm = {}
-                for key in STAT_COLS_MOCK:
-                    v = float(p.get(key, 0) or 0)
-                    rm[key] = {"value": v, "per90": round(v / nineties, 3)}
-                players.append({
-                    "name":       p["name"],
-                    "position":   p["position"],
-                    "squad":      p["squad"],
-                    "league":     p["league"],
-                    "age":        p["age"],
-                    "minutes":    int(mins),
-                    "season_90s": round(nineties, 1),
-                    "raw_metrics": rm,
-                    "coverage_flag": "good" if mins >= 900 else "low",
-                })
-            # Compute percentiles within mock cohort
-            for key in STAT_COLS_MOCK:
-                vals = [pl["raw_metrics"].get(key, {}).get("per90", 0) for pl in players]
-                arr = np.array(vals, dtype=float)
-                if arr.max() == 0:
+        # Any failure — empty cache, FBref 403, parse error, timeout — degrades to
+        # the built-in mock cohort rather than crashing the pipeline.
+        logger.error(f"get_position_cohort falling back to mock cohort: {exc}")
+
+        pos_upper = position.upper()
+        mock_key = next((k for k in _MOCK_COHORT if k in pos_upper or pos_upper in k), "FW")
+        cohort = _MOCK_COHORT.get(mock_key, _MOCK_COHORT["FW"])
+
+        players = []
+        for p in cohort:
+            mins = float(p.get("minutes", 0))
+            nineties = mins / 90 if mins > 0 else 0.001
+            rm = {}
+            for key in STAT_KEYS:
+                if key not in p:
                     continue
-                ranks = (arr.argsort().argsort() / max(len(arr) - 1, 1) * 100).round().astype(int)
-                for pl, pct in zip(players, ranks):
-                    if key in pl["raw_metrics"]:
-                        pl["raw_metrics"][key]["percentile"] = int(pct)
-            mock_json = json.dumps(players)
-            _COHORT_CACHE[cache_key] = (_time.time(), mock_json)
-            return mock_json
-        return json.dumps([{"error": f"get_position_cohort failed: {err_str}"}])
+                v = float(p.get(key, 0) or 0)
+                # pass_cmp_pct is already a percentage — don't divide by 90s
+                rm[key] = ({"value": v, "per90": v} if key == "pass_cmp_pct"
+                           else {"value": v, "per90": round(v / nineties, 3)})
+            players.append({
+                "name":          p["name"],
+                "position":      p["position"],
+                "squad":         p["squad"],
+                "league":        p["league"],
+                "age":           p["age"],
+                "minutes":       int(mins),
+                "season_90s":    round(nineties, 1),
+                "raw_metrics":   rm,
+                "coverage_flag": "good" if mins >= 900 else "low",
+                "data_source":   "mock",
+            })
+
+        _recompute_percentiles(players)
+        mock_json = _trim(players)
+        _COHORT_CACHE[cache_key] = (_time.time(), mock_json)
+        return mock_json
 
 
 @mcp.tool()
 async def get_enriched_player_stats(player_name: str, season: str = "2425") -> str:
     """
-    Fetch deep per-player stats from FBref by merging passing + possession +
-    goal-and-shot-creation tables for a single named player.
+    Return the full deep-metric block for a single named player from the cache.
 
-    Provides:
-      - pass_cmp_pct      : pass completion % (from passing table)
-      - prg_passes_detail : key passes, assists (from passing table)
-      - att_pen_touches   : touches in attacking penalty area (from possession)
-      - prg_carries_detail: carries into final third (from possession)
-      - sca, gca          : shot/goal creating actions per 90 (from goal_shot_creation)
+    Provides everything the trait engine consumes: goals, assists, xg, xa, shots,
+    shots_on_target, prg_passes, prg_carries, att_pen_touches, tackles,
+    interceptions, pass_cmp_pct, sca, gca — each with value, per90 and percentile.
 
-    Call this for each SELECTED candidate (after get_position_cohort) to enrich
-    their raw_metrics with the additional stats the trait engine needs.
+    Reads from data/fbref_cache.db only; it never scrapes, so it returns in
+    milliseconds. If a player is missing, rebuild the cache with
+    `python -m backend.data_pipeline.cache_builder`.
 
     Args:
-        player_name: Exact or partial name (e.g. "Milenković", "Salah").
+        player_name: Exact or partial name. Accents are optional —
+                     "Milenkovic" matches "Nikola Milenković".
         season:      Season code, e.g. "2425" for 2024-25.
     """
-    import pandas as pd
+    merged: dict = {"player_name": player_name, "season": season, "enriched_metrics": {}}
 
-    s = season
-    if len(s) == 4 and s.isdigit():
-        s = f"20{s[:2]}-20{s[2:]}"
-
-    FETCH_TABLES = {
-        "passing":             ["Cmp%", "KP", "PrgP"],
-        "possession":          ["Att Pen", "PrgC", "Mis", "Dis"],
-        "goal and shot creation": ["SCA", "GCA"],
-    }
-
-    merged: dict = {"player_name": player_name, "season": s, "enriched_metrics": {}}
-
-    # If the SQLite cache exists, look up what we already have for this player
-    # and return it — no Chrome, no FBref scraping needed.
-    if Path(_FBREF_CACHE_DB).exists():
-        try:
-            import sqlite3 as _s3
-            conn = _s3.connect(_FBREF_CACHE_DB)
-            row = conn.execute(
-                "SELECT raw_data FROM player_cohort WHERE season = ? AND LOWER(name) LIKE LOWER(?) LIMIT 1",
-                (season, f"%{player_name.split()[0]}%"),
-            ).fetchone()
-            conn.close()
-            if row:
-                player_data = json.loads(row[0])
-                # Expose the cached metrics as enriched_metrics so callers
-                # get the same structure they'd expect from FBref tables.
-                merged["enriched_metrics"] = {
-                    k: {"value": v.get("value", 0), "per90": v.get("per90", 0)}
-                    for k, v in player_data.get("raw_metrics", {}).items()
-                }
-                merged["note"] = "served from local cache"
-                logger.info(f"get_enriched_player_stats: cache hit for '{player_name}'")
-                return json.dumps(merged, default=str)
-        except Exception as exc:
-            logger.warning(f"Cache lookup for enriched stats failed: {exc}")
-
-    # No cache match — skip live FBref scrape (Chrome not needed for deployed demo)
-    if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" or not _SCRAPERFC_OK:
-        reason = "FBREF_USE_MOCK=true" if os.getenv("FBREF_USE_MOCK", "false").lower() == "true" else "ScraperFC unavailable"
-        logger.info(f"Skipping FBref scrape ({reason}) — returning empty enriched stats")
-        merged["note"] = f"Skipped ({reason})"
+    player_data = _find_cached_player(player_name, season)
+    if player_data is None:
+        merged["note"] = (
+            f"'{player_name}' is not in the cache for season {season}. "
+            "Rebuild with `python -m backend.data_pipeline.cache_builder`."
+        )
+        logger.info(f"get_enriched_player_stats: MISS for '{player_name}'")
         return json.dumps(merged, default=str)
 
-    fbref = FBref()
-    for cat, want_cols in FETCH_TABLES.items():
-        try:
-            result = await _scrape(fbref, s, "FBref Big 5 Combined", cat, timeout=60)
-            if not result or "player" not in result:
-                continue
-            df = _flatten_cols(result["player"])
-            p_col = _find_col(df, ["Player", "player"])
-            if not p_col:
-                continue
-            mask  = df[p_col].fillna("").str.lower().str.contains(player_name.lower(), na=False)
-            rows  = df[mask]
-            if rows.empty:
-                continue
-            row = rows.iloc[0]
-            # Get minutes to compute per-90
-            min_col = _find_col(df, ["Min", "min", "minutes"])
-            mins = float(row[min_col]) if min_col and pd.notna(row.get(min_col)) else 900.0
-            nineties = max(mins / 90, 0.1)
-            for col in want_cols:
-                src = _find_col(df, [col])
-                if not src:
-                    continue
-                try:
-                    val = float(row[src]) if pd.notna(row.get(src)) else 0.0
-                except Exception:
-                    val = 0.0
-                key = col.lower().replace(" ", "_").replace("%", "_pct").replace("/", "_")
-                is_pct = "%" in col
-                merged["enriched_metrics"][key] = {
-                    "value": round(val, 2),
-                    "per90": val if is_pct else round(val / nineties, 3),
-                }
-        except Exception as e:
-            logger.warning(f"Enrichment table '{cat}' failed for {player_name}: {e}")
-
-    if not merged["enriched_metrics"]:
-        merged["note"] = "No enriched stats available — FBref may be rate-limiting"
-
+    merged["matched_name"] = player_data.get("name", player_name)
+    merged["squad"] = player_data.get("squad", "")
+    merged["league"] = player_data.get("league", "")
+    merged["minutes"] = player_data.get("minutes", 0)
+    merged["enriched_metrics"] = {
+        k: {
+            "value": v.get("value", 0),
+            "per90": v.get("per90", 0),
+            "percentile": v.get("percentile"),
+        }
+        for k, v in player_data.get("raw_metrics", {}).items()
+    }
+    missing = [k for k in STAT_KEYS if k not in merged["enriched_metrics"]]
+    if missing:
+        merged["missing_metrics"] = missing
+    merged["note"] = "served from local cache"
+    logger.info(
+        f"get_enriched_player_stats: HIT '{player_name}' → {merged['matched_name']} "
+        f"({len(merged['enriched_metrics'])} metrics)"
+    )
     return json.dumps(merged, default=str)
+
+
+@mcp.tool()
+async def get_player_market_value(
+    player_name: str,
+    squad: str = "",
+    age: int = 0,
+) -> str:
+    """
+    Return a player's Transfermarkt market value and contract expiry.
+
+    This is the transfer-fee and availability side of the financial picture, which
+    the wage tools do not cover. Results are cached for two weeks, so repeated
+    calls are free and Transfermarkt sees one request per player per refresh.
+
+    Args:
+        player_name: Player name; accents optional.
+        squad:       Club from the cohort, used to disambiguate common names.
+        age:          Age in the cohort's season. Strongly recommended — it is the
+                     only season-independent way to tell two players with the same
+                     name apart, since the club on Transfermarkt is the player's
+                     club *today* and will differ for anyone who transferred.
+
+    Returns JSON with market_value_eur (int, or null if unpublished),
+    market_value_updated (the date Transfermarkt last revalued them),
+    contract_expires, current_club, profile_url, found, and note.
+    A market value is a dated estimate; present it as one.
+    """
+    import asyncio as _aio
+
+    from transfermarkt_lookup import lookup
+
+    try:
+        cached = _find_cached_player(player_name, season="2425")
+        age = age or int((cached or {}).get("age", 0) or 0)
+        result = await _aio.to_thread(
+            lookup, player_name, squad, _FBREF_CACHE_DB, age
+        )
+    except Exception as exc:
+        logger.warning(f"get_player_market_value failed for '{player_name}': {exc}")
+        return json.dumps({
+            "query_name": player_name, "found": False,
+            "note": f"Lookup failed: {type(exc).__name__}",
+        })
+
+    logger.info(
+        f"get_player_market_value: {player_name} → "
+        f"{result.get('market_value_eur')} (cache={result.get('from_cache')})"
+    )
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def get_player_salary(
+    player_name: str,
+    league: str = "",
+    minutes: int = 0,
+    season: str = "2425",
+    age: int = 0,
+    market_value_eur: float = 0,
+) -> str:
+    """
+    Return a player's weekly wage in EUR, with an explicit confidence source.
+
+    Resolution order — it always returns a usable number, never 0:
+      1. "capology"      real figure from the cached player_wages table
+      2. "market_value"  band modelled from the player's Transfermarkt valuation,
+                         which tracks wages far better than a league tier does
+      3. "league_median" median wage actually observed in that league in the cache
+      4. "league_tier"   per-league estimate scaled by minutes and age
+
+    Args:
+        player_name:    Player name; accents optional.
+        league:         League name (e.g. "Premier League").
+        minutes:        Season minutes played.
+        season:         Season code, e.g. "2425".
+        age:            Age, used by the tier fallback.
+        market_value_eur: Known valuation. When omitted the cached Transfermarkt
+                        value is used if one is present.
+
+    Returns JSON with wage_eur_per_week plus wage_low/wage_high when the estimate
+    is a band, the source, and whether it is an estimate.
+    """
+    player = _find_cached_player(player_name, season)
+    if player:
+        league = league or player.get("league", "")
+        minutes = minutes or int(player.get("minutes", 0))
+        age = age or int(player.get("age", 0) or 0)
+        market_value_eur = market_value_eur or float(player.get("value_eur") or 0)
+
+    # Reuse a cached Transfermarkt valuation rather than guess from a tier.
+    if not market_value_eur:
+        market_value_eur = _cached_market_value(player_name, player)
+
+    real = _get_wages_from_cache([player_name], season)
+    wage = real.get(_normalise_name(player_name))
+    if not wage and player:
+        wage = _get_wages_from_cache([player.get("name", "")], season).get(
+            _normalise_name(player.get("name", ""))
+        )
+
+    if wage:
+        result = {"wage_eur_per_week": int(wage), "source": "capology", "estimated": False}
+    elif market_value_eur:
+        low, mid, high = estimate_wage_from_value(market_value_eur, league)
+        result = {
+            "wage_eur_per_week": mid, "wage_low": low, "wage_high": high,
+            "source": "market_value", "estimated": True,
+            "market_value_eur": int(market_value_eur),
+        }
+    else:
+        median = _league_median_wage(league, season)
+        if median:
+            result = {"wage_eur_per_week": median, "source": "league_median", "estimated": True}
+        else:
+            result = {
+                "wage_eur_per_week": _estimate_wage(league, minutes, age),
+                "source": "league_tier",
+                "estimated": True,
+            }
+
+    result.update({
+        "player_name": player.get("name", player_name) if player else player_name,
+        "league": league,
+        "minutes": minutes,
+        "season": season,
+    })
+    logger.info(
+        f"get_player_salary: {result['player_name']} → "
+        f"€{result['wage_eur_per_week']:,}/wk ({result['source']})"
+    )
+    return json.dumps(result)
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

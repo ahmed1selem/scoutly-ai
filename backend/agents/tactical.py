@@ -117,6 +117,7 @@ class TacticalAgent(BaseAgent):
 
             verdict = compute_fit_verdict(p, club_profile) if club_profile else {
                 "measurable_fit":      0.0,
+                "demonstrated_fit":    0.0,
                 "trait_coverage":      0.0,
                 "per_trait_breakdown": [],
                 "qualitative_gaps":    [],
@@ -137,37 +138,56 @@ class TacticalAgent(BaseAgent):
         # ── 3. LLM qualitative verdict ─────────────────────────────────────────
         await self.emit_progress("LLM writing qualitative verdict over deterministic scores...")
 
+        # Send only what the verdict actually needs. The full club profile and
+        # RAG context run to thousands of tokens of material the model never
+        # cites, and the whole request has to fit a provider's per-minute budget.
+        club_slim = {
+            "club_name":     club_profile.get("club", {}).get("club_name", target_club),
+            "league":        club_profile.get("club", {}).get("league", ""),
+            "team_identity": club_profile.get("team_identity", {}),
+            "formations":    club_profile.get("formations", {}),
+            "ideal_player_traits": (
+                club_profile.get("recruitment_profile", {}).get("ideal_player_traits", {})
+            ),
+        }
+        verdicts_slim = [
+            {
+                "name":            fv["player"].get("name"),
+                "position":        fv["player"].get("position"),
+                "squad":           fv["player"].get("squad"),
+                "age":             fv["player"].get("age"),
+                "measurable_fit":   fv["verdict"]["measurable_fit"],
+                "demonstrated_fit": fv["verdict"].get("demonstrated_fit"),
+                "trait_coverage":  fv["verdict"]["trait_coverage"],
+                "confidence":      fv["verdict"]["confidence"],
+                "abstain":         fv["verdict"]["abstain"],
+                "abstain_reason":  fv["verdict"].get("abstain_reason"),
+                "scored_traits": {
+                    b["trait"]: b["score"] for b in fv["verdict"]["per_trait_breakdown"]
+                },
+                "unmeasured_traits": [g["trait"] for g in fv["verdict"]["qualitative_gaps"]],
+                "scout_note":      (fv["player"].get("scout_note", "") or "")[:200],
+            }
+            for fv in fit_verdicts
+        ]
+
         task_prompt = PromptLoader.get("tactical_evaluate").format(
             player_count=len(players),
-            club_profile_json=json.dumps(club_profile, indent=2)[:3000],
-            rag_context=rag_context[:2000],
-            fit_verdicts_json=json.dumps(
-                [
-                    {
-                        "name":            fv["player"].get("name"),
-                        "position":        fv["player"].get("position"),
-                        "measurable_fit":  fv["verdict"]["measurable_fit"],
-                        "trait_coverage":  fv["verdict"]["trait_coverage"],
-                        "per_trait_breakdown": fv["verdict"]["per_trait_breakdown"],
-                        "qualitative_gaps":    fv["verdict"]["qualitative_gaps"],
-                        "confidence":      fv["verdict"]["confidence"],
-                        "abstain":         fv["verdict"]["abstain"],
-                        "abstain_reason":  fv["verdict"].get("abstain_reason"),
-                        "trait_scores":    fv["player"].get("trait_scores", {}),
-                        "scout_note":      fv["player"].get("scout_note", ""),
-                    }
-                    for fv in fit_verdicts
-                ],
-                indent=2,
-            )[:4000],
-            financial_json=json.dumps(financial_decision, indent=2),
+            club_profile_json=json.dumps(club_slim)[:1800],
+            rag_context=rag_context[:800],
+            fit_verdicts_json=json.dumps(verdicts_slim)[:3000],
+            financial_json=json.dumps({
+                k: financial_decision.get(k)
+                for k in ("salary_min", "salary_max", "value_max", "team_name")
+                if financial_decision.get(k) is not None
+            }),
         )
         task_prompt += (
             "\n\nCRITICAL: Output ONLY valid JSON. "
             "Do not include markdown code blocks or extra text."
         )
 
-        response_text = await self._run_deep_agent(task_prompt)
+        response_text = await self._run_json_completion(task_prompt, max_tokens=3000)
         cleaned_text  = response_text.replace("```json", "").replace("```", "").strip()
 
         try:
@@ -192,12 +212,32 @@ class TacticalAgent(BaseAgent):
             if name in name_to_verdict:
                 v = name_to_verdict[name]
                 rp["measurable_fit"]      = v["measurable_fit"]
+                rp["demonstrated_fit"]    = v.get("demonstrated_fit")
                 rp["trait_coverage"]      = v["trait_coverage"]
                 rp["per_trait_breakdown"] = v["per_trait_breakdown"]
                 rp["qualitative_gaps"]    = v["qualitative_gaps"]
                 rp["confidence"]          = v["confidence"]
                 rp["abstain"]             = v["abstain"]
                 rp["abstain_reason"]      = v.get("abstain_reason")
+                rp["used_position_key"]   = v.get("used_position_key")
+
+        # Re-sort on demonstrated_fit. The LLM's ordering follows measurable_fit,
+        # which normalises over measured traits only and therefore favours the
+        # thinnest evidence; demonstrated_fit counts unmeasured requirements as
+        # unmet. Abstained candidates sink to the bottom regardless of score.
+        def _rank_key(rp: dict) -> tuple:
+            demonstrated = rp.get("demonstrated_fit")
+            if demonstrated is None:
+                demonstrated = rp.get("measurable_fit") or 0.0
+            return (
+                0 if rp.get("abstain") else 1,
+                float(demonstrated),
+                float(rp.get("confidence") or 0.0),
+            )
+
+        ranked.sort(key=_rank_key, reverse=True)
+        for i, rp in enumerate(ranked, start=1):
+            rp["rank"] = i
 
         await self.emit_complete(
             f"Tactical ranking complete — top pick: {ranked[0]['name'] if ranked else 'N/A'}"

@@ -86,6 +86,37 @@ class BaseAgent(ABC):
     # LLM Helpers
     # ─────────────────────────────────────────────────────────────────────────
 
+    async def _run_json_completion(
+        self,
+        task_message: str,
+        max_tokens: int = 2000,
+        temperature: float = 0.2,
+    ) -> str:
+        """
+        Ask the model for one JSON object, in a single call.
+
+        Preferred over `_run_deep_agent` for agents that only need to transform
+        data into structured output. The deep-agent loop attaches its planning
+        tool schemas to every request, which costs thousands of tokens and buys
+        nothing when there are no tools to call — enough to blow a provider's
+        per-minute token budget on its own.
+        """
+        response = await self.client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": task_message},
+            ],
+            response_format={"type": "json_object"},
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        content = response.choices[0].message.content or ""
+        await self.emit_progress(
+            f"[{self.AGENT_NAME}] Model returned {len(content)} chars of JSON"
+        )
+        return content
+
     async def _run_deep_agent(self, task_message: str, tools: list | None = None) -> str:
         """
         Run a deep agent loop with streaming SSE emission.

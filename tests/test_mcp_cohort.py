@@ -17,7 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "backend
 
 import pandas as pd
 from server import (
-    _flatten_cols, _find_col,
+    _flatten_cols, _find_col, _normalise_name,
     get_position_cohort,
     get_enriched_player_stats,
     _MOCK_COHORT,
@@ -26,16 +26,19 @@ from server import (
 
 
 @pytest.fixture(autouse=True)
-def clear_cohort_cache():
-    """Wipe the in-process cohort cache before every test so tests are independent."""
+def live_scrape_path():
+    """
+    Isolate the live-FBref branch of get_position_cohort.
+
+    In normal operation the pre-built SQLite cache answers first and `_scrape` is
+    never reached, so patching it alone tests nothing. These tests stub the cache
+    lookup to miss and enable the live path explicitly.
+    """
     _COHORT_CACHE.clear()
-    
-    # Force the server to think ScraperFC is OK and not in mock mode
-    # so that it actually executes the dataframe processing logic
-    # instead of immediately bailing to the hardcoded mock cohort.
-    with patch("server._SCRAPERFC_OK", True), patch.dict("os.environ", {"FBREF_USE_MOCK": "false"}):
+    with patch("server._SCRAPERFC_OK", True), \
+         patch("server._load_cohort_from_cache", return_value=None), \
+         patch.dict("os.environ", {"FBREF_USE_MOCK": "false", "FBREF_LIVE_SCRAPE": "true"}):
         yield
-        
     _COHORT_CACHE.clear()
 
 
@@ -218,16 +221,68 @@ def test_cohort_league_filter_applied(mock_scrape):
     assert len(players) == 1
     assert players[0]["name"] == "P_PL"
 
-@patch("server._scrape")
-def test_cohort_max_15_players(mock_scrape):
-    rows = {"Player": [f"P{i}" for i in range(25)]}
+def _big_cohort(n=25):
+    rows = {"Player": [f"P{i}" for i in range(n)]}
     rows.update({
-        "Pos":["FW"]*25, "Squad":["A"]*25, "Comp":["PL"]*25,
-        "Age":["25-100"]*25, "Min":[2000-i*50 for i in range(25)],
-        "Gls":[10]*25, "Ast":[5]*25, "xG":[9.0]*25, "xAG":[4.0]*25,
-        "Sh":[50]*25, "SoT":[25]*25, "PrgP":[100]*25, "PrgC":[70]*25,
+        "Pos": ["FW"]*n, "Squad": ["A"]*n, "Comp": ["PL"]*n,
+        "Age": ["25-100"]*n, "Min": [3000-i*50 for i in range(n)],
+        "Gls": [10]*n, "Ast": [5]*n, "xG": [9.0]*n, "xAG": [4.0]*n,
+        "Sh": [50]*n, "SoT": [25]*n, "PrgP": [100]*n, "PrgC": [70]*n,
     })
-    mock_scrape.side_effect = [{"player": pd.DataFrame(rows)}, Exception("skip")]
-    result = asyncio.run(get_position_cohort("FW", "2425"))
+    return pd.DataFrame(rows)
+
+
+@patch("server._scrape")
+def test_cohort_respects_limit(mock_scrape):
+    mock_scrape.side_effect = [{"player": _big_cohort(25)}, Exception("skip")]
+    result = asyncio.run(get_position_cohort("FW", "2425", limit=10))
+    assert len(json.loads(result)) == 10
+
+
+@patch("server._scrape")
+def test_cohort_limit_is_capped(mock_scrape):
+    """A caller asking for more than exists just gets everything, not an error."""
+    mock_scrape.side_effect = [{"player": _big_cohort(25)}, Exception("skip")]
+    result = asyncio.run(get_position_cohort("FW", "2425", limit=500))
+    assert len(json.loads(result)) == 25
+
+
+@patch("server._scrape")
+def test_cohort_min_minutes_filter(mock_scrape):
+    mock_scrape.side_effect = [{"player": _big_cohort(25)}, Exception("skip")]
+    result = asyncio.run(get_position_cohort("FW", "2425", limit=100, min_minutes=2000))
     players = json.loads(result)
-    assert len(players) <= 15
+    assert players, "expected some players above the minutes floor"
+    assert all(p["minutes"] >= 2000 for p in players)
+
+
+@patch("server._scrape")
+def test_cohort_min_minutes_never_empties_the_shortlist(mock_scrape):
+    """An impossible floor is ignored rather than returning nothing to the LLM."""
+    mock_scrape.side_effect = [{"player": _big_cohort(5)}, Exception("skip")]
+    result = asyncio.run(get_position_cohort("FW", "2425", min_minutes=99_000))
+    assert len(json.loads(result)) == 5
+
+
+@patch("server._scrape")
+def test_cohort_percentiles_span_full_cohort_not_the_trimmed_slice(mock_scrape):
+    """
+    Percentiles must be ranked over everyone before trimming — otherwise the
+    top-N players all look average against each other.
+    """
+    mock_scrape.side_effect = [{"player": _big_cohort(25)}, Exception("skip")]
+    result = asyncio.run(get_position_cohort("FW", "2425", limit=3))
+    players = json.loads(result)
+    assert len(players) == 3
+    # All 25 have identical per-90 goals but different minutes, so the three
+    # highest-minutes players sit at the BOTTOM of the goals-per-90 ranking.
+    assert players[0]["raw_metrics"]["goals"]["percentile"] < 50
+
+
+# ── name normalisation ────────────────────────────────────────────────────────
+
+def test_normalise_name_strips_diacritics():
+    assert _normalise_name("Nikola Milenković") == _normalise_name("Nikola Milenkovic")
+
+def test_normalise_name_is_case_and_space_insensitive():
+    assert _normalise_name("  ERLING   Haaland ") == "erling haaland"

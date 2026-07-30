@@ -1,15 +1,29 @@
 # Financial Agent — Salary Threshold Analysis Prompt
 
+Buying club: {club}
 Scouting query: {query}
 Target position: {position}
 
-Financial Plan:
+Financial Plan (generic default rules — NOT this club's audited accounts):
 ```json
 {plan_json}
 ```
 
-Based on the scouting query and the financial plan above,
-determine the appropriate salary thresholds and financial parameters.
+Determine the salary thresholds and financial parameters for **{club}** signing a
+**{position}**.
+
+Rules:
+- If the query states a budget, a wage ceiling or a fee limit, those take
+  precedence over every default below.
+- Otherwise scale the generic defaults to what a club of {club}'s standing in its
+  league would plausibly commit to this position. A perennial Champions League
+  side and a promoted club do not share a wage ceiling.
+- `salary_max` is a **weekly** wage in EUR, not annual. Sanity-check it: a Big-5
+  first-team regular sits between roughly EUR 10,000 and EUR 400,000 per week.
+- `value_max` is a one-off transfer fee in EUR, so it is orders of magnitude
+  larger than the weekly wage. Never return the two on the same scale.
+- Put anything you inferred rather than were told into `risk_flags`, so the
+  reader knows which numbers are assumptions.
 
 Return a JSON object with these exact keys:
 - salary_min (int, EUR/week)

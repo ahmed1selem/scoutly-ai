@@ -87,9 +87,16 @@ def load_skills(vectorstore: ClubVectorStore, skills_dir: Path):
 
 
 if __name__ == "__main__":
-    kb_path    = Path("E:/ITI/agentic/project/KB/profiles_enriched.json")
-    # Skills live one level above the Scoutly/ repo root
-    skills_dir = Path("E:/ITI/agentic/project/docs/skills")
+    kb_path    = settings.KB_PROFILES_PATH
+    skills_dir = settings.KB_SKILLS_DIR
+
+    if not kb_path.exists():
+        print(
+            f"Club profiles not found at {kb_path}.\n"
+            "Set KB_PROFILES_PATH in .env, or place the file at data/kb/profiles_enriched.json."
+        )
+        sys.exit(1)
+
     vs = ClubVectorStore()
     load_clubs(vs, kb_path)
     load_skills(vs, skills_dir)

@@ -43,7 +43,7 @@ def player_fw():
             "box_movement":       {"score": 0.90, "source": "real"},
             "link_play":          {"score": 0.70, "source": "proxy"},
             "pressing_intensity": {"score": 0.52, "source": "proxy"},
-            "aerial_ability":     {"score": None, "source": "qualitative"},
+            "aerial_strength":     {"score": None, "source": "qualitative"},
         },
     }
 
@@ -56,7 +56,7 @@ def club_with_striker_traits():
         "recruitment_profile": {
             "ideal_player_traits": {
                 "striker": ["box_movement", "link_play", "pressing_intensity",
-                            "out_of_possession_work", "aerial_ability"],
+                            "out_of_possession_work", "aerial_strength"],
             }
         },
     }
@@ -68,7 +68,7 @@ def test_measurable_fit_in_range(player_fw, club_with_striker_traits):
 def test_trait_coverage_correct(player_fw, club_with_striker_traits):
     verdict = compute_fit_verdict(player_fw, club_with_striker_traits)
     # 5 required traits: box_movement(real), link_play(proxy), pressing_intensity(proxy)
-    # scored, aerial_ability(qual) → qualitative gap, out_of_possession_work → not in scores
+    # scored, aerial_strength(qual) → qualitative gap, out_of_possession_work → not in scores
     assert verdict["trait_coverage"] == pytest.approx(3/5, abs=0.01)
 
 def test_tier_factors_applied(player_fw, club_with_striker_traits):
@@ -81,7 +81,7 @@ def test_tier_factors_applied(player_fw, club_with_striker_traits):
 def test_qualitative_trait_goes_to_gaps(player_fw, club_with_striker_traits):
     verdict = compute_fit_verdict(player_fw, club_with_striker_traits)
     gap_traits = [g["trait"] for g in verdict["qualitative_gaps"]]
-    assert "aerial_ability" in gap_traits
+    assert "aerial_strength" in gap_traits
     assert "out_of_possession_work" in gap_traits
 
 def test_confidence_is_0_to_1(player_fw, club_with_striker_traits):

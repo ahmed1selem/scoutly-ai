@@ -169,15 +169,26 @@ asyncio.run(test_mcp_cohort())
 # ═════════════════════════════════════════════════════════════════
 section("Layer 1b: SQLite cache configuration")
 
-from backend.mcp_server.server import _FBREF_CACHE_DB, _get_cohort_from_sqlite_cache  # type: ignore
+from backend.mcp_server.server import (  # type: ignore
+    _FBREF_CACHE_DB, _load_cohort_from_cache, _find_cached_player, _live_scrape_allowed,
+)
 check(
     "_FBREF_CACHE_DB path defined",
     bool(_FBREF_CACHE_DB),
     _FBREF_CACHE_DB,
 )
 check(
-    "_get_cohort_from_sqlite_cache function exists",
-    callable(_get_cohort_from_sqlite_cache),
+    "_load_cohort_from_cache function exists",
+    callable(_load_cohort_from_cache),
+)
+check(
+    "_find_cached_player function exists",
+    callable(_find_cached_player),
+)
+check(
+    "live scraping is off by default",
+    not _live_scrape_allowed(),
+    "requests are served from the pre-built cache",
 )
 
 
@@ -241,7 +252,7 @@ mock_club_profile = {
     "recruitment_profile": {
         "ideal_player_traits": {
             "striker": [
-                "finishing", "pressing_intensity", "progressive_carrying",
+                "finishing", "pressing_intensity", "ball_carrying",
                 "box_movement", "link_play",
             ],
         }
@@ -275,11 +286,12 @@ section("Layer 3a: Chart generator")
 
 from backend.pdf.chart_generator import (  # type: ignore
     generate_fit_bar_chart,
-    generate_radar_chart,
     generate_percentile_bars,
     generate_wage_fit_scatter,
     generate_all_guaranteed_charts,
 )
+# generate_radar_chart was removed: it filled every axis it had no data for with
+# a hardcoded 40.0, so four of six axes were fabricated on every player.
 import tempfile, os
 
 mock_players = [

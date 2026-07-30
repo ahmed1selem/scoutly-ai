@@ -38,22 +38,38 @@ class FBref:
         self.wait_time = wait_time
 
     # ==============================================================================================
+    #: Page reloads to attempt before giving up on FBref's bot check.
+    MAX_PAGE_RELOADS = 5
+
     @staticmethod
     def _get_soup(url: str) -> BeautifulSoup:
         """ Private, gets soup using botasaurus. """
+        # close_on_crash/raise_exception matter in headless runs: with botasaurus's
+        # defaults a Chrome crash calls driver.prompt(), which blocks on stdin
+        # forever when there is no console attached. Raising instead lets the
+        # caller retry.
         @browser(
             headless=False, block_images_and_css=False,
             wait_for_complete_page_load=False,
             output=None, create_error_logs=False,
+            close_on_crash=True, raise_exception=True,
+            max_retry=3, retry_wait=5,
         )
         def _(driver, url):  # type: ignore
             driver.google_get(url)
-            while True:
+            # Bounded, unlike an open `while True`: a persistently blocked page
+            # would otherwise reload forever and hang the calling thread.
+            for _attempt in range(FBref.MAX_PAGE_RELOADS):
                 try:
                     driver.wait_for_element("body.fb", wait=10)
                     break
                 except ElementWithSelectorNotFoundException:
                     driver.reload()
+            else:
+                raise ElementWithSelectorNotFoundException(
+                    f"FBref page did not load after {FBref.MAX_PAGE_RELOADS} reloads: {url}"
+                )
+
             return BeautifulSoup(driver.page_html, "html.parser")
         return _(url)
 

@@ -16,18 +16,20 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-# ── Design tokens (mirrors CSS vars) ─────────────────────────────────────────
-DARK    = "#0D1117"
-SURFACE = "#161B22"
-BORDER  = "#30363D"
-TEXT    = "#C9D1D9"
-MUTED   = "#8B949E"
-ACCENT  = "#00D4AA"
-ACCENT2 = "#FF6B35"
-GOLD    = "#F59E0B"
-GREEN   = "#22C55E"
-RED     = "#EF4444"
-PURPLE  = "#A78BFA"
+# ── Design tokens (mirrors report.html) ──────────────────────────────────────
+# A light palette: the report is a document that gets printed, and a dark chart
+# on white paper both wastes ink and breaks the page.
+DARK    = "#FFFFFF"   # figure background
+SURFACE = "#F6F7F9"   # plot area
+BORDER  = "#D8DCE2"
+TEXT    = "#14181F"
+MUTED   = "#5C6673"
+ACCENT  = "#1F6FEB"
+ACCENT2 = "#B45309"
+GOLD    = "#B45309"
+GREEN   = "#15803D"
+RED     = "#B91C1C"
+PURPLE  = "#6D28D9"
 
 PLAYER_COLORS = [ACCENT, ACCENT2, GOLD, PURPLE, "#4ECDC4"]
 
@@ -52,9 +54,14 @@ def _style() -> None:
 
 
 def _score_color(score: float) -> str:
-    if score >= 80:
+    """
+    Colour by demonstrated fit. The thresholds are lower than they were for the
+    old coverage-normalised score: demonstrated fit counts unmeasured
+    requirements as unmet, so 55 is a strong result, not a mediocre one.
+    """
+    if score >= 55:
         return GREEN
-    if score >= 60:
+    if score >= 35:
         return GOLD
     return RED
 
@@ -73,14 +80,20 @@ def generate_fit_bar_chart(players: list[dict], output_path: str) -> str:
 
     pairs = []
     for p in players:
-        raw = p.get("tactical_fit_score") or p.get("measurable_fit")
+        # demonstrated_fit is the ranking number: it counts requirements we could
+        # not measure as unmet, so thin evidence cannot inflate a bar.
+        raw = p.get("demonstrated_fit")
+        if raw is None:
+            raw = p.get("measurable_fit")
         try:
             score = float(raw)
         except (TypeError, ValueError):
             score = 0.0
         pairs.append((score, p.get("name", "Unknown")[:22]))
 
-    pairs.sort(reverse=True)
+    # barh draws the first item at the bottom, so ascending order puts the best
+    # candidate at the top and matches the table's ordering.
+    pairs.sort()
     scores  = [s for s, _ in pairs]
     names   = [n for _, n in pairs]
     colors  = [_score_color(s) for s in scores]
@@ -103,8 +116,9 @@ def generate_fit_bar_chart(players: list[dict], output_path: str) -> str:
         )
 
     ax.set_xlim(0, 118)
-    ax.set_xlabel("Tactical Fit Score", fontsize=9)
-    ax.set_title("Candidate Fit Score Ranking", color=TEXT, fontsize=12, fontweight="bold")
+    ax.set_xlabel("Demonstrated fit (0-100)", fontsize=9)
+    ax.set_title("Demonstrated fit — share of the club’s requirement met",
+                 color=TEXT, fontsize=12, fontweight="bold")
     ax.spines[["top", "right", "left"]].set_visible(False)
     ax.spines["bottom"].set_color(BORDER)
     ax.tick_params(axis="y", labelsize=10, labelcolor=TEXT)
@@ -133,67 +147,11 @@ _RADAR_CATS = {
     "Athleticism":["sprint_speed", "stamina", "acceleration", "agility",
                    "physical_presence", "dynamic_movement"],
 }
+# ── Radar chart removed ──────────────────────────────────────────────────────
+# It filled every axis it had no data for with a hardcoded 40.0, so four of six
+# axes were fabricated for every player. There is no honest way to draw a
+# six-axis profile from the metrics actually available.
 
-
-def _radar_values(player: dict) -> list[float]:
-    breakdown  = player.get("per_trait_breakdown", [])
-    trait_dict = {}
-    for t in breakdown:
-        if t.get("score") is not None:
-            key = re.sub(r"[^a-z0-9]+", "_", str(t["trait"]).lower())
-            trait_dict[key] = float(t["score"]) * 100
-
-    values = []
-    for keywords in _RADAR_CATS.values():
-        hits = [trait_dict[k] for k in keywords if k in trait_dict]
-        values.append(float(np.mean(hits)) if hits else 40.0)
-    return values
-
-
-def generate_radar_chart(players: list[dict], output_path: str) -> str:
-    """Spider/radar chart overlaying all players on shared axes."""
-    _style()
-
-    categories = list(_RADAR_CATS.keys())
-    N      = len(categories)
-    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
-    angles += angles[:1]
-
-    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw={"polar": True})
-    fig.patch.set_facecolor(DARK)
-    ax.set_facecolor(SURFACE)
-
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(categories, size=10, color=TEXT, fontweight="600")
-    ax.set_ylim(0, 100)
-    ax.set_yticks([25, 50, 75, 100])
-    ax.set_yticklabels(["25", "50", "75", "100"], size=7, color=MUTED)
-    ax.grid(color=BORDER, linewidth=0.6, alpha=0.6)
-    ax.spines["polar"].set_color(BORDER)
-
-    legend_patches: list[mpatches.Patch] = []
-    for i, player in enumerate(players[:5]):
-        vals   = _radar_values(player)
-        data   = vals + vals[:1]
-        color  = PLAYER_COLORS[i % len(PLAYER_COLORS)]
-        name   = player.get("name", f"Player {i + 1}")[:20]
-
-        ax.plot(angles, data, "o-", linewidth=2, color=color, alpha=0.9, markersize=4)
-        ax.fill(angles, data, alpha=0.09, color=color)
-        legend_patches.append(mpatches.Patch(color=color, label=name))
-
-    ax.legend(
-        handles=legend_patches,
-        loc="upper right",
-        bbox_to_anchor=(1.38, 1.18),
-        fontsize=9,
-        framealpha=0.25,
-    )
-    ax.set_title("Player Trait Radar — All Candidates", color=TEXT, fontsize=12,
-                 fontweight="bold", pad=22)
-
-    plt.tight_layout()
-    return _save(fig, output_path)
 
 
 # ── Chart 3: Per-Player Percentile Bars ──────────────────────────────────────
@@ -211,8 +169,8 @@ def _percentile_metrics(player: dict) -> list[tuple[str, float]]:
         "pass_cmp_pct":        "Pass Acc %",
         "tackles":             "Tackles /90",
         "interceptions":       "Interceptions /90",
-        "progressive_carries": "Prog Carries /90",
-        "progressive_passes":  "Prog Passes /90",
+        "prg_carries":         "Prog Carries /90",
+        "prg_passes":          "Prog Passes /90",
         "sca":                 "Shot-Creating Actions",
         "gca":                 "Goal-Creating Actions",
     }
@@ -224,24 +182,17 @@ def _percentile_metrics(player: dict) -> list[tuple[str, float]]:
         if pct is not None:
             try:
                 items.append((label, float(pct)))
-                if len(items) >= 6:
+                if len(items) >= 8:
                     break
             except (TypeError, ValueError):
                 pass
 
-    # Supplement / fallback with trait breakdown scores (as percentiles)
-    breakdown = player.get("per_trait_breakdown") or []
-    for t in breakdown:
-        if t.get("score") is None:
-            continue
-        label = str(t["trait"]).replace("_", " ").title()
-        val   = float(t["score"]) * 100
-        if label not in {i[0] for i in items}:
-            items.append((label, val))
-        if len(items) >= 10:
-            break
-
-    return items[:10] if items else [("Fit Score", float(player.get("measurable_fit") or 50))]
+    # Deliberately NOT supplemented with per_trait_breakdown scores: those are
+    # 0-1 trait scores, not cohort percentiles, and plotting them on the same
+    # "th percentile" axis mislabels them. Nor is a placeholder invented when a
+    # player has no percentiles — an empty list tells the caller to skip the
+    # chart rather than draw a fabricated 50th.
+    return items[:8]
 
 
 def generate_percentile_bars(player: dict, output_path: str) -> str:
@@ -249,6 +200,10 @@ def generate_percentile_bars(player: dict, output_path: str) -> str:
     _style()
 
     metrics = _percentile_metrics(player)
+    if not metrics:
+        raise ValueError(
+            f"no percentile data for {player.get('name', 'player')} — chart skipped"
+        )
     labels  = [m[0] for m in metrics]
     values  = [m[1] for m in metrics]
     colors  = [GREEN if v >= 75 else ACCENT if v >= 50 else GOLD if v >= 30 else RED
@@ -287,51 +242,63 @@ def generate_percentile_bars(player: dict, output_path: str) -> str:
     return _save(fig, output_path)
 
 
-# ── Chart 4: Wage vs Fit Scatter ─────────────────────────────────────────────
+# ── Chart 4: Market value vs demonstrated fit ────────────────────────────────
 
 def generate_wage_fit_scatter(players: list[dict], output_path: str) -> str:
-    """Scatter: weekly wage (x) vs tactical fit score (y) — bubble size = market value."""
+    """
+    Scatter: Transfermarkt market value (x) against demonstrated fit (y).
+
+    Previously plotted weekly wage, which was a single league-tier constant for
+    every candidate — the chart came out as a vertical line and its "bubble size
+    = market value" caption described data the report did not have. Market value
+    is real, per-player and dated, so it carries actual variance.
+    """
     _style()
+
+    priced = [p for p in players if float(p.get("value_eur", 0) or 0) > 0]
+    if len(priced) < 2:
+        raise ValueError("fewer than two candidates have a published market value")
 
     fig, ax = plt.subplots(figsize=(8, 5))
     fig.patch.set_facecolor(DARK)
     ax.set_facecolor(SURFACE)
 
-    wages, scores = [], []
-    for i, player in enumerate(players):
-        wage  = float(player.get("wage_eur", 0) or 0) / 1_000
-        score = float(player.get("tactical_fit_score") or player.get("measurable_fit") or 0)
+    values, scores = [], []
+    for i, player in enumerate(priced):
         value = float(player.get("value_eur", 0) or 0) / 1_000_000
+        raw = player.get("demonstrated_fit")
+        if raw is None:
+            raw = player.get("measurable_fit")
+        score = float(raw or 0)
         name  = player.get("name", f"P{i + 1}")[:16]
         color = PLAYER_COLORS[i % len(PLAYER_COLORS)]
-        size  = max(80, min(700, value * 15)) if value else 180
 
-        ax.scatter(wage, score, s=size, color=color, alpha=0.85, edgecolors=BORDER,
-                   linewidth=0.5, zorder=3)
-        ax.annotate(name, (wage, score), xytext=(5, 5),
-                    textcoords="offset points", color=color, fontsize=8.5, fontweight="600")
-        wages.append(wage)
+        ax.scatter(value, score, s=200, color=color, alpha=0.85, edgecolors="white",
+                   linewidth=1.0, zorder=3)
+        ax.annotate(name, (value, score), xytext=(7, 5),
+                    textcoords="offset points", color=TEXT, fontsize=8.5, fontweight="600")
+        values.append(value)
         scores.append(score)
 
-    if wages:
-        mw, ms = float(np.mean(wages)), float(np.mean(scores))
-        ax.axvline(mw, color=BORDER, linestyle="--", alpha=0.35, linewidth=0.8)
-        ax.axhline(ms, color=BORDER, linestyle="--", alpha=0.35, linewidth=0.8)
-        ax.text(0.02, 0.97, "High Fit\nLow Cost", transform=ax.transAxes,
-                color=GREEN, fontsize=8, alpha=0.75, va="top")
-        ax.text(0.75, 0.97, "High Fit\nHigher Cost", transform=ax.transAxes,
-                color=GOLD, fontsize=8, alpha=0.75, va="top")
+    mv, ms = float(np.mean(values)), float(np.mean(scores))
+    ax.axvline(mv, color=BORDER, linestyle="--", alpha=0.5, linewidth=0.8)
+    ax.axhline(ms, color=BORDER, linestyle="--", alpha=0.5, linewidth=0.8)
+    ax.text(0.02, 0.97, "Better fit,\nlower fee", transform=ax.transAxes,
+            color=GREEN, fontsize=8, va="top")
+    ax.text(0.98, 0.03, "Weaker fit,\nhigher fee", transform=ax.transAxes,
+            color=RED, fontsize=8, va="bottom", ha="right")
 
-    ax.set_xlabel("Weekly Wage (€K)", fontsize=9)
-    ax.set_ylabel("Tactical Fit Score", fontsize=9)
-    ax.set_title("Value-for-Money Positioning", color=TEXT, fontsize=12, fontweight="bold")
+    ax.set_xlabel("Transfermarkt market value (€M)", fontsize=9)
+    ax.set_ylabel("Demonstrated fit (0-100)", fontsize=9)
+    ax.set_title("Fee against demonstrated fit", color=TEXT, fontsize=12, fontweight="bold")
     ax.spines[["top", "right"]].set_visible(False)
     ax.spines[["left", "bottom"]].set_color(BORDER)
-    ax.grid(True, alpha=0.15, color=BORDER)
+    ax.grid(True, alpha=0.25, color=BORDER)
 
-    note = "Bubble size ∝ market value"
-    ax.text(0.99, 0.01, note, transform=ax.transAxes,
-            color=MUTED, fontsize=7, ha="right", va="bottom")
+    if len(priced) < len(players):
+        ax.text(0.99, 0.99,
+                f"{len(players) - len(priced)} candidate(s) omitted — no published value",
+                transform=ax.transAxes, color=MUTED, fontsize=7, ha="right", va="top")
 
     plt.tight_layout()
     return _save(fig, output_path)
@@ -357,9 +324,8 @@ def generate_all_guaranteed_charts(
     generated: list[str] = []
 
     _attempts: list[tuple[str, Any, list]] = [
-        ("00_fit_ranking.png",    generate_fit_bar_chart,    [players]),
-        ("01_radar_overlay.png",  generate_radar_chart,      [players]),
-        ("04_wage_vs_fit.png",    generate_wage_fit_scatter,  [players]),
+        ("00_fit_ranking.png",    generate_fit_bar_chart,     [players]),
+        ("04_value_vs_fit.png",   generate_wage_fit_scatter,  [players]),
     ]
 
     for filename, fn, args in _attempts:

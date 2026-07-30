@@ -102,7 +102,9 @@ class PlannerAgent(BaseAgent):
 
         # 1. Financial Agent
         await self.emit_progress("Step 1: Running Financial Agent...")
-        financial_res = await self.financial.run(query=query, position=target_position or None)
+        financial_res = await self.financial.run(
+            query=query, position=target_position or None, target_club=target_club
+        )
 
         # 2. Scouter Agent  (receives target_club for smart localised search)
         await self.emit_progress("Step 2: Running Scouter Agent...")
@@ -110,6 +112,8 @@ class PlannerAgent(BaseAgent):
             query=query, financial_decision=financial_res, target_club=target_club
         )
         players = scouter_res.get("players", [])
+        # Carried into the report so a short shortlist explains itself.
+        selection_funnel = scouter_res.get("funnel", {})
 
         # 3. Tactical Agent  (receives target_club so it retrieves the RIGHT club profile)
         await self.emit_progress("Step 3: Running Tactical Agent...")
@@ -122,6 +126,16 @@ class PlannerAgent(BaseAgent):
             tactical_res = {}
             ranked_players = []
             await self.emit_progress("No players found to evaluate tactically.")
+
+        # 3b. Financial Agent, second pass: cost the shortlist. This has to run
+        # after the scouter, because a transfer fee only exists once Transfermarkt
+        # has been consulted — the first pass sets the ceilings, this one checks
+        # real fees and wages against them.
+        if ranked_players:
+            await self.emit_progress("Step 3b: Costing the shortlist against the budget...")
+            financial_res["deal_economics"] = await self.financial.assess_deals(
+                ranked_players, financial_res
+            )
 
         final_summary = "Draft pipeline completed successfully."
         if history:
@@ -139,6 +153,7 @@ class PlannerAgent(BaseAgent):
             "summary": final_summary,
             "ranked_players": ranked_players,
             "financial_decision": financial_res,
+            "selection_funnel": selection_funnel,
         }
 
         await self.emit_progress("Draft generated and ready for human review.")
@@ -175,11 +190,17 @@ class PlannerAgent(BaseAgent):
             charts=analysis_res.get("charts", []),
             unified_analysis=analysis_res.get("unified_report", ""),
             langsmith_trace_url=langsmith_trace_url,
+            selection_funnel=kwargs.get("selection_funnel") or {},
         )
 
         final = {
             "run_id": self.run_id,
             "pdf_path": pdf_res.get("pdf_path", ""),
+            # Pass the generator's own report on how it rendered. Callers need to
+            # know whether they got a real PDF or the HTML fallback, and it was
+            # only reaching the SSE stream, not the return value.
+            "pdf_backend": pdf_res.get("pdf_backend", ""),
+            "html_path": pdf_res.get("html_path", ""),
             "summary": "Final report generated.",
         }
 

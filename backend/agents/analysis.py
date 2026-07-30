@@ -10,14 +10,29 @@ Flow (agent-driven, not hard-coded):
 import asyncio
 import base64
 import json
+import os
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
-from openai import AzureOpenAI
-from langchain_openai import AzureChatOpenAI
+#: Wall-clock budget for the optional LLM chart-exploration loop.
+ANALYSIS_BUDGET_SECONDS = int(os.getenv("ANALYSIS_BUDGET_SECONDS", "180"))
+
+#: The exploratory chart loop is OFF by default.
+#:
+#: It attaches the full player payload plus three tool schemas to every model
+#: call, which comes to ~15k tokens — above Groq's 12k/minute allowance — so it
+#: failed on 16 consecutive benchmark runs (413/429) and produced no charts at
+#: any point, while still costing the retry latency. The report's standard charts
+#: come from chart_generator.py and do not depend on it.
+#:
+#: Set ANALYSIS_LLM_CHARTS=true to re-enable, ideally on a provider with a larger
+#: per-minute budget.
+ANALYSIS_LLM_CHARTS = os.getenv("ANALYSIS_LLM_CHARTS", "false").lower() == "true"
+
 from langchain_core.tools import tool
 
 # deepagents requires a custom LangChain fork not on PyPI — import is optional.
@@ -35,22 +50,23 @@ except Exception as _da_err:  # ImportError or anything from the custom-fork imp
         "guaranteed charts will still be produced.", _da_err
     )
 
-from ..utils.config import settings
+from ..utils.config import settings, get_langchain_llm, next_groq_key
 from ..utils.prompt_loader import PromptLoader
 
 
-# ── Azure clients (shared) ────────────────────────────────────────────────────
+# ── LLM clients (provider-aware) ──────────────────────────────────────────────
 
-def _azure_llm() -> AzureChatOpenAI:
-    return AzureChatOpenAI(
-        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-        azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
-        api_key=settings.AZURE_OPENAI_API_KEY,
-        api_version=settings.AZURE_OPENAI_API_VERSION,
-        temperature=0,
-    )
+def _chat_llm():
+    return get_langchain_llm()
 
-def _azure_raw() -> AzureOpenAI:
+
+def _raw_client():
+    """Synchronous OpenAI-compatible client for the configured provider."""
+    if settings.LLM_PROVIDER == "groq":
+        from openai import OpenAI
+        return OpenAI(api_key=next_groq_key(), base_url=settings.GROQ_BASE_URL)
+
+    from openai import AzureOpenAI
     return AzureOpenAI(
         api_key=settings.AZURE_OPENAI_API_KEY,
         azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
@@ -147,9 +163,23 @@ def describe_image(image_path: str) -> str:
     with open(path, "rb") as f:
         img_b64 = base64.b64encode(f.read()).decode()
 
-    client = _azure_raw()
+    client = _raw_client()
+    try:
+        response = _describe(client, img_b64)
+    except Exception as exc:
+        # Not every configured model accepts images (Groq's Llama text models do
+        # not). Report it back to the agent instead of aborting the analysis.
+        return (
+            f"Vision description unavailable for {path.name}: {type(exc).__name__}. "
+            f"Model '{settings.OPENAI_MODEL}' may not accept image input — "
+            "describe the chart from the underlying player data instead."
+        )
+    return response
+
+
+def _describe(client, img_b64: str) -> str:
     response = client.chat.completions.create(
-        model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+        model=settings.OPENAI_MODEL,
         messages=[{
             "role": "user",
             "content": [
@@ -224,6 +254,14 @@ class AnalysisAgent:
 
         chart_dir = str(settings.CHARTS_DIR / run_id)
 
+        if not ANALYSIS_LLM_CHARTS:
+            await self.emit_progress(
+                "LLM chart exploration disabled (ANALYSIS_LLM_CHARTS=false) — "
+                "the report's standard charts are generated regardless."
+            )
+            await self.emit_complete("Analysis skipped — standard charts active")
+            return {"charts": [], "player_reports": {}, "unified_report": ""}
+
         # If deepagents is unavailable, skip LLM chart generation entirely.
         # The PDFGenerator's guaranteed charts (chart_generator.py) still run.
         if not _DEEPAGENTS_OK:
@@ -235,7 +273,7 @@ class AnalysisAgent:
             return {"charts": [], "player_reports": {}, "unified_report": ""}
 
         # Build the deep agent
-        llm = _azure_llm()
+        llm = _chat_llm()
         agent = _create_deep_agent(
             model=llm,
             tools=[run_python_script, describe_image, list_files],
@@ -255,8 +293,24 @@ class AnalysisAgent:
         report = "Analysis complete."
         all_charts: list[str] = []
 
+        # Hard wall-clock bound on the exploratory loop. It is optional work, and
+        # a rate-limited provider makes it retry indefinitely — one run sat in this
+        # loop for over five hours. The fit scores and guaranteed charts do not
+        # depend on it, so abandoning it costs the report nothing.
+        deadline = time.monotonic() + ANALYSIS_BUDGET_SECONDS
+
         try:
             for event in agent.stream({"messages": task}, stream_mode="updates"):
+                if time.monotonic() > deadline:
+                    await self.emit_progress(
+                        f"Chart exploration hit its {ANALYSIS_BUDGET_SECONDS}s budget — "
+                        "stopping here and keeping what it produced."
+                    )
+                    report = (
+                        "Automated chart exploration was cut short at its time budget. "
+                        "The ranking, fit scores and standard charts are unaffected."
+                    )
+                    break
                 if not isinstance(event, dict):
                     continue
                 for node, state in event.items():
@@ -305,8 +359,15 @@ class AnalysisAgent:
                                 await self.emit_progress(f"Agent reasoning: {content[:150]}...")
 
         except Exception as exc:
-            await self.emit_error("Deep agent error", str(exc))
-            raise
+            # The exploratory chart loop is a bonus, not the report. A provider
+            # rate limit or a bad tool call here must not lose the whole run —
+            # the fit engine's numbers and the guaranteed charts still stand.
+            await self.emit_error("Deep agent error — continuing without LLM charts", str(exc))
+            report = (
+                "Automated chart exploration did not complete "
+                f"({type(exc).__name__}). The ranking, fit scores and standard "
+                "charts in this report are unaffected."
+            )
 
         # Collect charts produced
         chart_path = Path(chart_dir)

@@ -1,1344 +1,687 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>{{ team_name }} — Scouting Intelligence Report</title>
-  <style>
-    /* System font stack — no external requests needed; Inter loads if installed */
-    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-
-    :root {
-      --dark:    #0D1117;
-      --surf:    #161B22;
-      --surf2:   #1C2128;
-      --border:  #30363D;
-      --text:    #C9D1D9;
-      --muted:   #8B949E;
-      --accent:  #00D4AA;
-      --accent2: #FF6B35;
-      --gold:    #F59E0B;
-      --green:   #22C55E;
-      --red:     #EF4444;
-      --purple:  #A78BFA;
-    }
-
-    @page { size: A4; margin: 0; }
-
-    body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
-                   'Helvetica Neue', Arial, sans-serif;
-      background: var(--dark);
-      color: var(--text);
-      font-size: 9.5pt;
-      line-height: 1.6;
-    }
-
-    /* ══ Page breaks ══════════════════════════════════════════════════ */
-    .page { page-break-after: always; }
-    .page:last-child { page-break-after: avoid; }
-
-    /* ══ Cover ════════════════════════════════════════════════════════ */
-    .cover {
-      background: linear-gradient(150deg, #060A0F 0%, #0D1117 35%, #0B1F16 70%, #0D1117 100%);
-      height: 297mm;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .cover-glow {
-      position: absolute;
-      width: 500px; height: 500px;
-      background: radial-gradient(circle, rgba(0,212,170,0.10) 0%, transparent 70%);
-      top: -100px; right: -80px;
-      pointer-events: none;
-    }
-    .cover-glow-2 {
-      position: absolute;
-      width: 300px; height: 300px;
-      background: radial-gradient(circle, rgba(255,107,53,0.06) 0%, transparent 70%);
-      bottom: 80px; left: 60px;
-      pointer-events: none;
-    }
-
-    .cover-inner {
-      position: relative;
-      z-index: 1;
-      padding: 0 56px;
-      padding-top: 190px;
-      text-align: left;
-    }
-
-    .cover-eyebrow {
-      display: inline-block;
-      background: rgba(0,212,170,0.12);
-      border: 1px solid rgba(0,212,170,0.35);
-      color: var(--accent);
-      font-size: 7.5pt;
-      font-weight: 700;
-      letter-spacing: 2.5px;
-      text-transform: uppercase;
-      padding: 5px 18px;
-      border-radius: 20px;
-      margin-bottom: 28px;
-    }
-
-    .cover-club {
-      font-size: 54pt;
-      font-weight: 900;
-      letter-spacing: -2px;
-      line-height: 1;
-      background: linear-gradient(135deg, #ffffff 0%, var(--accent) 100%);
-      -webkit-background-clip: text;
-      color: transparent;
-      margin-bottom: 8px;
-    }
-
-    .cover-sub {
-      font-size: 12pt;
-      color: var(--muted);
-      font-weight: 300;
-      letter-spacing: 5px;
-      text-transform: uppercase;
-      margin-bottom: 52px;
-    }
-
-    .cover-rule {
-      width: 60px; height: 3px;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
-      border-radius: 2px;
-      margin-bottom: 40px;
-    }
-
-    .cover-report-title {
-      font-size: 24pt;
-      font-weight: 800;
-      color: white;
-      line-height: 1.25;
-      max-width: 480px;
-      margin-bottom: 14px;
-    }
-
-    .cover-query {
-      font-size: 10.5pt;
-      color: var(--muted);
-      font-style: italic;
-      max-width: 500px;
-      line-height: 1.7;
-      margin-bottom: 56px;
-    }
-
-    .cover-stats {
-      display: block;
-    }
-
-    .cover-stat {
-      display: inline-block;
-      width: 28%;
-      margin-right: 2%;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 18px 14px;
-      box-sizing: border-box;
-      vertical-align: top;
-    }
-
-    .cover-stat-val {
-      font-size: 22pt;
-      font-weight: 800;
-      color: var(--accent);
-      line-height: 1;
-      margin-bottom: 4px;
-    }
-
-    .cover-stat-lbl {
-      font-size: 7pt;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-    }
-
-    .cover-footer {
-      position: absolute;
-      bottom: 28px;
-      left: 56px; right: 56px;
-      display: block;
-      border-top: 1px solid var(--border);
-      padding-top: 14px;
-      font-size: 7.5pt;
-      color: var(--muted);
-      letter-spacing: 0.5px;
-    }
-
-    /* ══ Section page ═════════════════════════════════════════════════ */
-    .section-page {
-      padding: 32px 40px 32px;
-      min-height: 297mm;
-      position: relative;
-    }
-
-    .page-header {
-      display: block;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 14px;
-      margin-bottom: 26px;
-      page-break-after: avoid;
-    }
-
-    .page-header-left {
-      display: inline-block;
-      vertical-align: middle;
-    }
-
-    .page-header-right {
-      display: inline-block;
-      vertical-align: middle;
-      float: right;
-      font-size: 8pt;
-      color: var(--muted);
-      margin-top: 8px;
-    }
-
-    .section-tag {
-      background: var(--accent);
-      color: #000;
-      font-weight: 700;
-      font-size: 7pt;
-      letter-spacing: 1.5px;
-      text-transform: uppercase;
-      padding: 3px 10px;
-      border-radius: 4px;
-      margin-right: 10px;
-      vertical-align: middle;
-    }
-
-    .section-title {
-      font-size: 17pt;
-      font-weight: 800;
-      color: white;
-      vertical-align: middle;
-    }
-
-    /* ══ Executive Summary ════════════════════════════════════════════ */
-    .exec-box {
-      background: linear-gradient(135deg, rgba(0,212,170,0.07) 0%, rgba(0,212,170,0.02) 100%);
-      border: 1px solid rgba(0,212,170,0.28);
-      border-radius: 12px;
-      padding: 22px 24px;
-      margin-bottom: 24px;
-      font-size: 10.5pt;
-      line-height: 1.8;
-      color: var(--text);
-    }
-
-    /* ── KPI cards row ── */
-    .kpi-row { display: block; margin-bottom: 24px; text-align: center; }
-
-    .kpi-card {
-      display: inline-block;
-      width: 23%;
-      margin: 0 0.6%;
-      background: var(--surf);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px 8px;
-      text-align: center;
-      box-sizing: border-box;
-      vertical-align: top;
-    }
-
-    .kpi-val {
-      font-size: 20pt;
-      font-weight: 800;
-      color: var(--accent);
-      line-height: 1.1;
-    }
-
-    .kpi-lbl {
-      font-size: 7pt;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-top: 4px;
-    }
-
-    /* ── Ranking table ── */
-    .rank-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 8.5pt;
-      margin-bottom: 20px;
-    }
-
-    .rank-table th {
-      background: var(--surf);
-      color: var(--accent);
-      padding: 10px 12px;
-      text-align: left;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      font-size: 7pt;
-      border-bottom: 2px solid var(--accent);
-    }
-
-    .rank-table td {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .rank-table tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
-    .rank-table tr:last-child td { border-bottom: none; }
-
-    .pos-pill {
-      background: rgba(0,212,170,0.1);
-      color: var(--accent);
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 7.5pt;
-      font-weight: 700;
-    }
-
-    /* Top pick callout */
-    .top-pick {
-      background: linear-gradient(135deg, rgba(0,212,170,0.1), rgba(0,212,170,0.03));
-      border: 1px solid rgba(0,212,170,0.35);
-      border-left: 4px solid var(--accent);
-      border-radius: 0 10px 10px 0;
-      padding: 14px 18px;
-      margin-bottom: 20px;
-    }
-
-    .top-pick-label {
-      font-size: 7.5pt;
-      font-weight: 700;
-      color: var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 4px;
-    }
-
-    .top-pick-name {
-      font-size: 14pt;
-      font-weight: 800;
-      color: white;
-    }
-
-    .top-pick-meta {
-      font-size: 8.5pt;
-      color: var(--muted);
-      margin-top: 2px;
-    }
-
-    /* ══ Player Profile page ══════════════════════════════════════════ */
-    .player-card {
-      background: var(--surf);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 22px 24px;
-      margin-bottom: 20px;
-      page-break-inside: avoid;
-    }
-
-    .player-card.rank-1 { border-color: var(--gold); }
-    .player-card.rank-2 { border-color: var(--muted); }
-    .player-card.rank-3 { border-color: #CD7F32; }
-
-    /* Player header row */
-    .player-head { display: block; margin-bottom: 18px; }
-
-    .player-rank-badge {
-      display: inline-block;
-      width: 38px; height: 38px;
-      border-radius: 50%;
-      text-align: center;
-      line-height: 38px;
-      font-size: 14pt;
-      font-weight: 900;
-      color: #000;
-      vertical-align: middle;
-      margin-right: 12px;
-    }
-
-    .rank-1 .player-rank-badge { background: var(--gold); }
-    .rank-2 .player-rank-badge { background: #C0C0C0; }
-    .rank-3 .player-rank-badge { background: #CD7F32; }
-    .rank-other .player-rank-badge { background: var(--border); color: var(--text); }
-
-    .player-name-block { display: inline-block; vertical-align: middle; }
-
-    .player-name {
-      font-size: 16pt;
-      font-weight: 800;
-      color: white;
-      line-height: 1.1;
-    }
-
-    .player-meta {
-      font-size: 8pt;
-      color: var(--muted);
-      margin-top: 3px;
-    }
-
-    .player-meta span { margin-right: 10px; }
-
-    .player-score-block {
-      float: right;
-      text-align: right;
-      margin-left: 12px;
-    }
-
-    .fit-score-num {
-      font-size: 30pt;
-      font-weight: 900;
-      line-height: 1;
-    }
-
-    .score-high { color: var(--green); }
-    .score-mid  { color: var(--gold); }
-    .score-low  { color: var(--red); }
-
-    .fit-score-sub {
-      font-size: 7pt;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 1.2px;
-    }
-
-    /* ── Key stats strip ── */
-    .stats-strip { display: block; margin: 14px 0; text-align: center; }
-
-    .stat-chip {
-      display: inline-block;
-      width: 15%;
-      margin: 0 0.3%;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 9px 4px;
-      text-align: center;
-      box-sizing: border-box;
-      vertical-align: top;
-    }
-
-    .stat-chip-val {
-      font-size: 12pt;
-      font-weight: 700;
-      color: var(--accent);
-    }
-
-    .stat-chip-lbl {
-      font-size: 6pt;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.4px;
-      margin-top: 2px;
-    }
-
-    /* ── Two-column body ── */
-    .player-body { display: block; margin-top: 16px; }
-
-    .player-col-left {
-      display: inline-block;
-      width: 57%;
-      vertical-align: top;
-      padding-right: 16px;
-      box-sizing: border-box;
-    }
-
-    .player-col-right {
-      display: inline-block;
-      width: 41%;
-      vertical-align: top;
-      box-sizing: border-box;
-    }
-
-    /* Tactical verdict */
-    .verdict-box {
-      background: rgba(0,212,170,0.05);
-      border-left: 3px solid var(--accent);
-      border-radius: 0 8px 8px 0;
-      padding: 11px 14px;
-      font-size: 9pt;
-      font-style: italic;
-      color: var(--text);
-      margin-bottom: 14px;
-      line-height: 1.65;
-    }
-
-    /* Scout intel box */
-    .intel-box {
-      background: rgba(167,139,250,0.05);
-      border: 1px solid rgba(167,139,250,0.2);
-      border-radius: 8px;
-      padding: 12px 14px;
-      margin-bottom: 14px;
-    }
-
-    .intel-label {
-      font-size: 7pt;
-      font-weight: 700;
-      color: var(--purple);
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 6px;
-    }
-
-    .intel-text {
-      font-size: 8pt;
-      color: var(--muted);
-      line-height: 1.65;
-    }
-
-    /* Strengths / weaknesses pills */
-    .sw-section { display: block; margin-bottom: 10px; }
-
-    .sw-half {
-      display: inline-block;
-      width: 48%;
-      vertical-align: top;
-      box-sizing: border-box;
-    }
-
-    .sw-half:first-child { margin-right: 2%; }
-
-    .sw-heading {
-      font-size: 7pt;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 1.2px;
-      margin-bottom: 6px;
-    }
-
-    .sw-heading.green { color: var(--green); }
-    .sw-heading.red   { color: var(--red); }
-
-    .pill-row { display: block; }
-
-    .pill {
-      display: inline-block;
-      font-size: 7.5pt;
-      padding: 3px 9px;
-      border-radius: 12px;
-      margin: 2px 2px 2px 0;
-      font-weight: 500;
-    }
-
-    .pill-green {
-      background: rgba(34,197,94,0.1);
-      border: 1px solid rgba(34,197,94,0.25);
-      color: var(--green);
-    }
-
-    .pill-red {
-      background: rgba(239,68,68,0.1);
-      border: 1px solid rgba(239,68,68,0.25);
-      color: var(--red);
-    }
-
-    /* Trait score bars (right column) */
-    .trait-bars-title {
-      font-size: 7pt;
-      font-weight: 700;
-      color: var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 8px;
-    }
-
-    .trait-bar-row {
-      display: block;
-      margin-bottom: 7px;
-    }
-
-    .tbar-label {
-      display: inline-block;
-      font-size: 7.5pt;
-      color: var(--text);
-      width: 56%;
-      vertical-align: middle;
-    }
-
-    .tbar-track {
-      display: inline-block;
-      width: 32%;
-      height: 6px;
-      background: var(--border);
-      border-radius: 3px;
-      vertical-align: middle;
-    }
-
-    .tbar-fill {
-      height: 100%;
-      border-radius: 3px;
-    }
-
-    .tbar-score {
-      display: inline-block;
-      width: 10%;
-      font-size: 7.5pt;
-      font-weight: 700;
-      color: var(--text);
-      text-align: right;
-      vertical-align: middle;
-    }
-
-    /* Confidence badges row */
-    .conf-row { display: block; margin-top: 12px; }
-
-    .conf-chip {
-      display: inline-block;
-      font-size: 7.5pt;
-      font-weight: 600;
-      padding: 4px 10px;
-      border-radius: 6px;
-      margin: 2px 3px 2px 0;
-    }
-
-    .conf-high   { background: rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.35); color:var(--green); }
-    .conf-medium { background: rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.35); color:var(--gold); }
-    .conf-low    { background: rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.35); color:var(--red); }
-
-    /* Abstain banner */
-    .abstain-banner {
-      background: rgba(239,68,68,0.1);
-      border: 1px solid var(--red);
-      border-radius: 8px;
-      padding: 9px 13px;
-      color: var(--red);
-      font-size: 8pt;
-      font-weight: 600;
-      margin: 10px 0;
-    }
-
-    /* Financial row */
-    .financial-row {
-      display: block;
-      margin-top: 14px;
-      padding-top: 12px;
-      border-top: 1px solid var(--border);
-    }
-
-    .fin-chip {
-      display: inline-block;
-      background: rgba(245,158,11,0.08);
-      border: 1px solid rgba(245,158,11,0.25);
-      color: var(--gold);
-      font-size: 8pt;
-      font-weight: 600;
-      padding: 4px 12px;
-      border-radius: 6px;
-      margin-right: 8px;
-    }
-
-    .fin-note {
-      display: inline-block;
-      font-size: 7.5pt;
-      color: var(--muted);
-      font-style: italic;
-    }
-
-    /* ══ Charts page ══════════════════════════════════════════════════ */
-    .chart-section-label {
-      font-size: 7.5pt;
-      font-weight: 700;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 2px;
-      margin: 22px 0 12px;
-      padding-top: 14px;
-      border-top: 1px solid var(--border);
-    }
-
-    .chart-section-label:first-of-type {
-      margin-top: 0;
-      border-top: none;
-      padding-top: 0;
-    }
-
-    .chart-grid { display: block; }
-
-    .chart-box {
-      display: inline-block;
-      width: 48%;
-      margin-bottom: 18px;
-      vertical-align: top;
-      background: var(--surf);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px;
-      box-sizing: border-box;
-      page-break-inside: avoid;
-    }
-
-    .chart-box.full { width: 100%; }
-    .chart-box:nth-child(odd):not(.full) { margin-right: 2%; }
-
-    .chart-box-title {
-      font-size: 8pt;
-      font-weight: 600;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 10px;
-    }
-
-    .chart-box img { width: 100%; border-radius: 6px; }
-
-    /* ══ Tactical appendix / Conclusion ══════════════════════════════ */
-    .appendix-box {
-      background: var(--surf);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 18px 22px;
-      margin-bottom: 20px;
-    }
-
-    .appendix-label {
-      font-size: 7.5pt;
-      font-weight: 700;
-      color: var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 10px;
-    }
-
-    .appendix-text {
-      font-size: 9pt;
-      color: var(--text);
-      line-height: 1.75;
-    }
-
-    .conclusion-box {
-      background: linear-gradient(135deg, rgba(0,212,170,0.09), rgba(0,212,170,0.02));
-      border: 1px solid rgba(0,212,170,0.38);
-      border-radius: 14px;
-      padding: 26px 28px;
-      margin-top: 18px;
-    }
-
-    .conclusion-title {
-      font-size: 12pt;
-      font-weight: 800;
-      color: var(--accent);
-      margin-bottom: 12px;
-    }
-
-    .conclusion-text {
-      font-size: 9.5pt;
-      color: var(--text);
-      line-height: 1.8;
-    }
-
-    .conf-badge {
-      display: inline-block;
-      padding: 5px 18px;
-      border-radius: 20px;
-      font-size: 8.5pt;
-      font-weight: 700;
-      margin-top: 14px;
-    }
-
-    .risk-box {
-      margin-top: 20px;
-      background: rgba(239,68,68,0.06);
-      border: 1px solid rgba(239,68,68,0.22);
-      border-radius: 10px;
-      padding: 14px 18px;
-    }
-
-    .risk-label {
-      font-size: 7.5pt;
-      font-weight: 700;
-      color: var(--red);
-      text-transform: uppercase;
-      letter-spacing: 1.2px;
-      margin-bottom: 7px;
-    }
-
-    .risk-item {
-      font-size: 8.5pt;
-      color: var(--text);
-      padding: 3px 0;
-    }
-
-    .report-footer {
-      margin-top: 40px;
-      text-align: center;
-      font-size: 7pt;
-      color: var(--muted);
-      border-top: 1px solid var(--border);
-      padding-top: 14px;
-    }
-
-    /* Clearfix */
-    .cf::after { content: ''; display: table; clear: both; }
-  </style>
-</head>
-<body>
-
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-{# COVER                                                                       #}
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-<div class="page">
-  <div class="cover">
-    <div class="cover-glow"></div>
-    <div class="cover-glow-2"></div>
-    {# Strip generic prefixes so "Arsenal FC" → "ARSENAL", "FC Barcelona" → "BARCELONA" #}
-    {% set _cn = team_name
-         | replace("Football Club","") | replace(" F.C.","") | replace(" FC","")
-         | replace("FC ","") | replace("AC ","") | replace("AS ","") | replace("SS ","")
-         | replace("AFC","") | trim %}
-    <div class="cover-inner">
-      <div class="cover-eyebrow">Confidential &middot; Football Scouting Intelligence</div>
-      <div class="cover-club">{{ _cn | upper if _cn else team_name | upper }}</div>
-      <div class="cover-sub">Recruitment Analysis {{ generated_at.split(",")[0].split(" ")[-1] }}</div>
-      <div class="cover-rule"></div>
-      <div class="cover-report-title">Player Scouting &amp; Recruitment<br/>Intelligence Report</div>
-      <p class="cover-query">&ldquo;{{ query }}&rdquo;</p>
-
-      <div class="cover-stats">
-        <div class="cover-stat">
-          <div class="cover-stat-val">{{ player_count }}</div>
-          <div class="cover-stat-lbl">Candidates Analysed</div>
-        </div>
-        <div class="cover-stat">
-          {% set top_score = ranked_players[0].get("tactical_fit_score") or ranked_players[0].get("measurable_fit") if ranked_players else none %}
-          <div class="cover-stat-val">{{ "%.0f"|format(top_score|float) if top_score != none else "—" }}</div>
-          <div class="cover-stat-lbl">Peak Fit Score</div>
-        </div>
-        <div class="cover-stat">
-          <div class="cover-stat-val">AI</div>
-          <div class="cover-stat-lbl">Multi-Agent Analysis</div>
-        </div>
-      </div>
+{#
+  Scouting report — rebuilt.
+
+  Design rules this template enforces, each traceable to a defect in the version
+  it replaces:
+
+  1. A metric that was not measured renders as an em dash and is named in an
+     explicit "not measured" list. It NEVER renders as 0.00, because a real zero
+     and a missing measurement must not look identical.
+  2. `demonstrated_fit` is the headline number. `measurable_fit` normalises over
+     measured traits only, so thin data inflates it; it appears only alongside
+     coverage, as a secondary figure.
+  3. Every candidate row states the position profile it was scored against, so a
+     midfielder graded on midfielder traits is never silently ranked head to head
+     with a centre-back.
+  4. Estimated figures carry the word "est." and their provenance. Market values
+     carry the date Transfermarkt last revalued them.
+  5. Sections with no content are omitted entirely rather than rendered as empty
+     decorative boxes.
+  6. Nothing is asserted about provenance in the footer that the run did not do.
+
+  Light palette on purpose: this is a document that gets printed.
+#}
+{%- macro num(value, digits=0, suffix='') -%}
+  {%- if value is none or value == '' -%}&mdash;
+  {%- else -%}{{ ("%." ~ digits ~ "f")|format(value|float) }}{{ suffix }}
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro money(value) -%}
+  {%- if not value -%}&mdash;
+  {%- elif value|float >= 1000000 -%}&euro;{{ "%.0f"|format(value|float / 1000000) }}M
+  {%- else -%}&euro;{{ "{:,}".format(value|int) }}
+  {%- endif -%}
+{%- endmacro -%}
+
+{#- A per-90 metric cell. Absent metric -> em dash, never zero. -#}
+{%- macro metric(rm, key, digits=2) -%}
+  {%- if key in rm and rm[key].get('per90') is not none -%}
+    {{ ("%." ~ digits ~ "f")|format(rm[key]['per90']|float) }}
+  {%- else -%}<span class="na" title="not measured">&mdash;</span>
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro pctile(rm, key) -%}
+  {%- if key in rm and rm[key].get('percentile') is not none -%}
+    <span class="pct">{{ rm[key]['percentile']|int }}</span>
+  {%- else -%}<span class="na">&mdash;</span>
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- set season = "2024-25" -%}
+{%- set club = team_name or "the club" -%}
+{%- set n = ranked_players|length -%}
+
+<title>{{ club }} — Scouting Report</title>
+<style>
+  /* ── tokens ─────────────────────────────────────────────────────────────── */
+  :root{
+    --ink:#14181F; --ink-2:#3A4350; --ink-3:#5C6673; --ink-4:#8A939F;
+    --line:#E3E6EB; --line-2:#D8DCE2; --bg:#FFFFFF; --bg-2:#F6F7F9;
+    --accent:#1F6FEB; --good:#15803D; --warn:#B45309; --bad:#B91C1C;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  }
+  @page{ size:A4; margin:16mm 14mm; }
+  *{ box-sizing:border-box; }
+  html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:400 10.5pt/1.5 "Inter","Segoe UI",-apple-system,"Helvetica Neue",Arial,sans-serif;
+    font-variant-numeric:tabular-nums;
+  }
+  h1,h2,h3,h4{ margin:0; font-weight:640; letter-spacing:-0.011em; }
+  h1{ font-size:26pt; line-height:1.15; }
+  h2{ font-size:14pt; }
+  h3{ font-size:11.5pt; }
+  p{ margin:0 0 var(--s3); }
+  a{ color:var(--accent); text-decoration:none; }
+  .sheet{ max-width:186mm; margin:0 auto; }
+  .page-break{ break-before:page; page-break-before:always; }
+  .avoid-break{ break-inside:avoid; page-break-inside:avoid; }
+
+  /* ── masthead ───────────────────────────────────────────────────────────── */
+  .masthead{ border-bottom:2.5px solid var(--ink); padding-bottom:var(--s3);
+             margin-bottom:var(--s5); }
+  .eyebrow{ font-size:7.5pt; font-weight:680; letter-spacing:.14em;
+            text-transform:uppercase; color:var(--ink-3); }
+  .masthead .meta{ display:flex; gap:var(--s5); flex-wrap:wrap;
+                   font-size:8.5pt; color:var(--ink-3); margin-top:var(--s2); }
+  .masthead .meta b{ color:var(--ink-2); font-weight:600; }
+  .brief{ margin-top:var(--s3); padding:var(--s3) var(--s4);
+          background:var(--bg-2); border-left:3px solid var(--accent);
+          font-size:10.5pt; color:var(--ink-2); }
+
+  /* ── section heads ──────────────────────────────────────────────────────── */
+  .sec{ display:flex; align-items:baseline; gap:var(--s3);
+        margin:var(--s6) 0 var(--s3); border-bottom:1px solid var(--line);
+        padding-bottom:var(--s2); }
+  .sec .idx{ font-size:8pt; font-weight:700; color:var(--ink-4);
+             font-variant-numeric:tabular-nums; }
+  .sec:first-child{ margin-top:0; }
+
+  /* ── headline verdict ───────────────────────────────────────────────────── */
+  .verdict{ display:grid; grid-template-columns:auto 1fr; gap:var(--s5);
+            align-items:center; padding:var(--s4) 0; }
+  .bigscore{ font-size:44pt; font-weight:700; line-height:1;
+             letter-spacing:-0.03em; }
+  .bigscore small{ font-size:12pt; font-weight:500; color:var(--ink-4); }
+  .bigscore-cap{ font-size:7.5pt; font-weight:680; letter-spacing:.1em;
+                 text-transform:uppercase; color:var(--ink-3); margin-top:var(--s1); }
+  .pick-name{ font-size:19pt; font-weight:660; letter-spacing:-0.02em; }
+  .pick-sub{ font-size:9.5pt; color:var(--ink-3); margin-top:2px; }
+
+  /* ── table ──────────────────────────────────────────────────────────────── */
+  table{ width:100%; border-collapse:collapse; font-size:9pt; }
+  th{ text-align:left; font-size:7.5pt; font-weight:680; letter-spacing:.06em;
+      text-transform:uppercase; color:var(--ink-3);
+      border-bottom:1px solid var(--ink-2); padding:0 var(--s2) var(--s2) 0;
+      white-space:nowrap; }
+  td{ padding:var(--s2) var(--s2) var(--s2) 0; border-bottom:1px solid var(--line);
+      vertical-align:baseline; }
+  th.r,td.r{ text-align:right; padding-right:0; }
+  tbody tr:last-child td{ border-bottom:1px solid var(--ink-2); }
+  .rank{ font-weight:700; color:var(--ink-4); width:1.6em; }
+  .who{ font-weight:600; }
+  .where{ color:var(--ink-3); font-size:8.5pt; }
+  .na{ color:var(--ink-4); }
+  .pct{ font-weight:600; }
+
+  /* ── chips ──────────────────────────────────────────────────────────────── */
+  .chip{ display:inline-block; padding:1px 6px; border-radius:3px;
+         font-size:7.5pt; font-weight:640; letter-spacing:.02em;
+         border:1px solid var(--line-2); color:var(--ink-2); background:var(--bg-2);
+         white-space:nowrap; }
+  .chip.good{ color:var(--good); border-color:#BBF7D0; background:#F0FDF4; }
+  .chip.warn{ color:var(--warn); border-color:#FDE68A; background:#FFFBEB; }
+  .chip.bad{ color:var(--bad);  border-color:#FECACA; background:#FEF2F2; }
+  .chip.est{ color:var(--ink-3); }
+
+  /* ── notices ────────────────────────────────────────────────────────────── */
+  .notice{ padding:var(--s3) var(--s4); font-size:9pt; margin:var(--s3) 0;
+           border-left:3px solid var(--warn); background:#FFFBEB;
+           color:#78350F; }
+  .notice.bad{ border-left-color:var(--bad); background:#FEF2F2; color:#7F1D1D; }
+  .notice b{ font-weight:680; }
+
+  /* ── player card ────────────────────────────────────────────────────────── */
+  .card-head{ display:flex; justify-content:space-between; align-items:flex-start;
+              gap:var(--s4); border-bottom:1.5px solid var(--ink);
+              padding-bottom:var(--s3); margin-bottom:var(--s4); }
+  .card-score{ text-align:right; white-space:nowrap; }
+  .card-score .v{ font-size:30pt; font-weight:700; line-height:1;
+                  letter-spacing:-0.025em; }
+  .card-score .l{ font-size:7pt; font-weight:680; letter-spacing:.09em;
+                  text-transform:uppercase; color:var(--ink-3); }
+  .facts{ display:grid; grid-template-columns:repeat(4,1fr); gap:0;
+          border:1px solid var(--line); margin-bottom:var(--s4); }
+  .fact{ padding:var(--s3); border-right:1px solid var(--line); }
+  .fact:last-child{ border-right:none; }
+  .fact .k{ font-size:7pt; font-weight:680; letter-spacing:.08em;
+            text-transform:uppercase; color:var(--ink-3); }
+  .fact .v{ font-size:12pt; font-weight:640; margin-top:2px; }
+  .fact .n{ font-size:7.5pt; color:var(--ink-4); margin-top:1px; }
+
+  .cols{ display:grid; grid-template-columns:1.15fr 1fr; gap:var(--s5); }
+  .traits{ margin:0; padding:0; list-style:none; font-size:9pt; }
+  .traits li{ display:grid; grid-template-columns:1fr 46px 2.6em;
+              align-items:center; gap:var(--s2); padding:3px 0; }
+  .bar{ height:5px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .bar i{ display:block; height:100%; background:var(--accent); }
+  .bar i.good{ background:var(--good); } .bar i.warn{ background:var(--warn); }
+  .bar i.bad{ background:var(--bad); }
+  .traits .sc{ text-align:right; font-weight:640; font-size:8.5pt; }
+  .src{ font-size:7pt; color:var(--ink-4); text-transform:uppercase;
+        letter-spacing:.05em; }
+  .prose{ font-size:9.5pt; color:var(--ink-2); }
+  .prose h4{ font-size:7.5pt; font-weight:680; letter-spacing:.09em;
+             text-transform:uppercase; color:var(--ink-3);
+             margin:var(--s4) 0 var(--s2); }
+  .prose ul{ margin:0; padding-left:1.1em; }
+  .prose li{ margin-bottom:3px; }
+  figure{ margin:var(--s4) 0 0; break-inside:avoid; }
+  figure img{ width:100%; height:auto; display:block; border:1px solid var(--line); }
+  figcaption{ font-size:7.5pt; color:var(--ink-4); margin-top:var(--s1); }
+
+  .method dt{ font-weight:640; font-size:9pt; margin-top:var(--s3); }
+  .method dd{ margin:2px 0 0; font-size:9pt; color:var(--ink-2); }
+  .foot{ margin-top:var(--s7); padding-top:var(--s3);
+         border-top:1px solid var(--line); font-size:7.5pt; color:var(--ink-4); }
+</style>
+
+<div class="sheet">
+
+{# ══ 1. Masthead + brief ═════════════════════════════════════════════════ #}
+<header class="masthead">
+  <div class="eyebrow">Recruitment shortlist &middot; Confidential</div>
+  <h1>{{ club }}</h1>
+  <div class="meta">
+    <span><b>Season</b> {{ season }} data</span>
+    <span><b>Candidates</b> {{ n }}</span>
+    <span><b>Compiled</b> {{ generated_at }}</span>
+    <span><b>Run</b> {{ run_id[:8] }}</span>
+  </div>
+  <div class="brief"><b>Brief.</b> {{ query }}</div>
+  {% if financial_decision.get('salary_max') or financial_decision.get('value_max') %}
+    <div class="meta" style="margin-top:var(--s3)">
+      <span><b>Wage ceiling</b>
+        {% if financial_decision.get('salary_max') %}
+          &euro;{{ "{:,}".format(financial_decision.salary_max|int) }}/wk
+        {% else %}&mdash;{% endif %}</span>
+      <span><b>Fee ceiling</b>
+        {% if financial_decision.get('value_max') %}
+          &euro;{{ "%.0f"|format(financial_decision.value_max|float / 1000000) }}M
+        {% else %}&mdash;{% endif %}</span>
+      {% if financial_decision.get('budget_basis') %}
+        <span><b>Basis</b> {{ financial_decision.budget_basis }}</span>
+      {% endif %}
     </div>
+  {% endif %}
+</header>
 
-    <div class="cover-footer">
-      {{ team_name }} &nbsp;&middot;&nbsp; {{ generated_at }} &nbsp;&middot;&nbsp; Run #{{ run_id[:8] }} &nbsp;&middot;&nbsp; CONFIDENTIAL — For Internal Use Only
+{% if not ranked_players %}
+  <div class="notice bad">
+    <b>No candidate met the brief.</b> No player in the searched cohort satisfied
+    the position, budget and eligibility filters. Widen the brief or revise the
+    budget, then re-run.
+  </div>
+{% else %}
+
+{# ══ 2. Decision ════════════════════════════════════════════════════════ #}
+{% set top = ranked_players[0] %}
+{% set top_fit = top.get('demonstrated_fit') if top.get('demonstrated_fit') is not none
+                 else top.get('measurable_fit') %}
+<div class="sec"><span class="idx">01</span><h2>Recommendation</h2></div>
+
+<div class="verdict avoid-break">
+  <div>
+    <div class="bigscore">{{ num(top_fit) }}<small>/100</small></div>
+    <div class="bigscore-cap">Demonstrated fit</div>
+  </div>
+  <div>
+    <div class="pick-name">{{ top.get('name','') }}</div>
+    <div class="pick-sub">
+      {{ top.get('squad','') }} &middot; age {{ top.get('age','&mdash;') }}
+      &middot; {{ top.get('position','') }}
+      {%- if top.get('used_position_key') %} &middot; scored as
+        {{ top.used_position_key|replace('_',' ') }}{% endif %}
+    </div>
+    <div class="pick-sub" style="margin-top:6px">
+      {% set cov = top.get('trait_coverage') %}
+      {% if cov is not none %}
+        <span class="chip {{ 'good' if cov|float >= 0.6 else 'warn' if cov|float >= 0.4 else 'bad' }}">
+          {{ "%.0f"|format(cov|float * 100) }}% of requirement measured</span>
+      {% endif %}
+      {% if top.get('confidence') is not none %}
+        <span class="chip {{ 'good' if top.confidence|float >= 0.6 else 'warn' if top.confidence|float >= 0.35 else 'bad' }}">
+          confidence {{ "%.0f"|format(top.confidence|float * 100) }}%</span>
+      {% endif %}
+      {% if top.get('contract_expires') %}
+        <span class="chip">contract to {{ top.contract_expires }}</span>
+      {% endif %}
     </div>
   </div>
 </div>
 
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-{# EXECUTIVE SUMMARY                                                           #}
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-<div class="page">
-  <div class="section-page">
-    <div class="page-header cf">
-      <div class="page-header-left">
-        <span class="section-tag">01</span>
-        <span class="section-title">Executive Summary</span>
-      </div>
-      <div class="page-header-right">Page 2</div>
-    </div>
-
-    {% if not ranked_players %}
-    <div class="exec-box" style="border-color:var(--red); background:rgba(239,68,68,0.05); color:#f87171; text-align:center; padding:40px; font-size:14pt;">
-      No candidates matched the scouting criteria.
-      {% if unified_analysis %}<br/><br/><span style="font-size:10pt; color:var(--muted);">{{ unified_analysis }}</span>{% endif %}
-    </div>
-
-    {% else %}
-
-    <div class="exec-box">{{ narratives.executive_summary | default('') }}</div>
-
-    {# KPI cards #}
-    <div class="kpi-row">
-      <div class="kpi-card">
-        <div class="kpi-val">{{ player_count }}</div>
-        <div class="kpi-lbl">Candidates</div>
-      </div>
-      <div class="kpi-card">
-        {% set top_score = ranked_players[0].get("tactical_fit_score") or ranked_players[0].get("measurable_fit") %}
-        <div class="kpi-val" style="color: {% if top_score and top_score|float >= 80 %}var(--green){% elif top_score and top_score|float >= 60 %}var(--gold){% else %}var(--red){% endif %};">
-          {{ "%.0f"|format(top_score|float) if top_score != none else "—" }}
-        </div>
-        <div class="kpi-lbl">Top Fit Score</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-val">&euro;{{ "{:,}".format(financial_decision.get("salary_max", 0)) }}</div>
-        <div class="kpi-lbl">Max Weekly Wage</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-val">&euro;{{ "{:,.0f}M".format(financial_decision.get("value_max", 0) / 1000000) }}</div>
-        <div class="kpi-lbl">Transfer Budget</div>
-      </div>
-    </div>
-
-    {# Top pick callout #}
-    {% if ranked_players %}
-    {% set top = ranked_players[0] %}
-    <div class="top-pick">
-      <div class="top-pick-label">Top Recommendation</div>
-      <div class="top-pick-name">{{ top.get("name", "") }}</div>
-      <div class="top-pick-meta">
-        {{ top.get("squad", top.get("club","")) }} &nbsp;&middot;&nbsp;
-        Age {{ top.get("age","") }} &nbsp;&middot;&nbsp;
-        {{ top.get("position","") }} &nbsp;&middot;&nbsp;
-        {{ top.get("league","") }}
-        {% set ts = top.get("tactical_fit_score") or top.get("measurable_fit") %}
-        {% if ts != none %}&nbsp;&middot;&nbsp; Fit Score: <strong style="color:var(--accent);">{{ "%.0f"|format(ts|float) }}/100</strong>{% endif %}
-      </div>
-    </div>
-    {% endif %}
-
-    {# Ranking table #}
-    <table class="rank-table">
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Player</th>
-          <th>Club</th>
-          <th>Pos</th>
-          <th>Age</th>
-          <th>Wage/wk</th>
-          <th>Fit Score</th>
-          <th>Measurable</th>
-          <th>Confidence</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in ranked_players %}
-        {% set fit  = p.get("tactical_fit_score") or p.get("measurable_fit") %}
-        {% set mfit = p.get("measurable_fit") %}
-        {% set conf = p.get("confidence") %}
-        <tr>
-          <td style="font-weight:700; color: {% if loop.index==1 %}var(--gold){% elif loop.index==2 %}#C0C0C0{% elif loop.index==3 %}#CD7F32{% else %}var(--muted){% endif %};">
-            #{{ p.get("rank", loop.index) }}
-          </td>
-          <td style="font-weight:700; color:white;">{{ p.get("name","") }}</td>
-          <td style="color:var(--muted);">{{ p.get("squad", p.get("club","")) }}</td>
-          <td><span class="pos-pill">{{ p.get("position","") }}</span></td>
-          <td>{{ p.get("age","") }}</td>
-          <td>&euro;{{ "{:,}".format(p.get("wage_eur",0)) }}</td>
-          <td style="font-weight:700; color: {% if fit and fit|float >= 80 %}var(--green){% elif fit and fit|float >= 60 %}var(--gold){% else %}var(--red){% endif %};">
-            {{ "%.0f"|format(fit|float) if fit != none else "—" }}
-          </td>
-          <td style="color:var(--muted);">{{ "%.1f"|format(mfit|float) if mfit != none else "—" }}</td>
-          <td style="color: {% if conf and conf|float >= 0.70 %}var(--green){% elif conf and conf|float >= 0.45 %}var(--gold){% else %}var(--muted){% endif %};">
-            {{ "%.0f%%"|format(conf|float * 100) if conf != none else "—" }}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-
-    <div style="font-size:8pt; color:var(--muted); line-height:1.7;">
-      {{ narratives.financial_section | default('') }}
-    </div>
-    {% endif %}
-  </div>
-</div>
-
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-{# PLAYER PROFILES                                                             #}
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-{% for player in ranked_players %}
-<div class="page">
-  <div class="section-page">
-    {% set rank = player.get("rank", loop.index) %}
-    {% set pg   = loop.index + 2 %}
-
-    <div class="page-header cf">
-      <div class="page-header-left">
-        <span class="section-tag">{{ "%02d"|format(loop.index + 1) }}</span>
-        <span class="section-title">{{ player.get("name","") }} &mdash; Rank #{{ rank }}</span>
-      </div>
-      <div class="page-header-right">Page {{ pg }}</div>
-    </div>
-
-    <div class="player-card {% if rank==1 %}rank-1{% elif rank==2 %}rank-2{% elif rank==3 %}rank-3{% else %}rank-other{% endif %}">
-
-      {# ── Player header ── #}
-      <div class="player-head cf">
-        <div class="player-rank-badge">{{ rank }}</div>
-        <div class="player-name-block" style="display:inline-block; vertical-align:middle;">
-          <div class="player-name">{{ player.get("name","") }}</div>
-          <div class="player-meta">
-            <span>{{ player.get("squad", player.get("club","")) }}</span>
-            <span>Age {{ player.get("age","") }}</span>
-            <span>{{ player.get("position","") }}</span>
-            <span>{{ player.get("league","") }}</span>
-            {% if player.get("minutes") %}<span>{{ player.get("minutes") }} min</span>{% endif %}
-          </div>
-        </div>
-        <div class="player-score-block">
-          {% set score = player.get("tactical_fit_score") or player.get("measurable_fit") %}
-          {% if score != none %}
-          <div class="fit-score-num {% if score|float >= 80 %}score-high{% elif score|float >= 60 %}score-mid{% else %}score-low{% endif %}">
-            {{ "%.0f"|format(score|float) }}
-          </div>
-          <div class="fit-score-sub">Tactical Fit</div>
-          {% endif %}
-        </div>
-      </div>
-
-      {# ── Key stats strip ── #}
-      {% set rm = player.get("raw_metrics", {}) %}
-      <div class="stats-strip">
-        {% if rm %}
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ "%.2f"|format(rm.get("goals",{}).get("per90",0)|float) }}</div>
-          <div class="stat-chip-lbl">Goals/90</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ "%.2f"|format(rm.get("xg",{}).get("per90",0)|float) }}</div>
-          <div class="stat-chip-lbl">xG/90</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ "%.2f"|format(rm.get("assists",{}).get("per90",0)|float) }}</div>
-          <div class="stat-chip-lbl">Ast/90</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">
-            {% set pct = rm.get("pass_cmp_pct",{}) %}
-            {{ pct.get("value","—") }}{% if pct.get("value") %}%{% endif %}
-          </div>
-          <div class="stat-chip-lbl">Pass%</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ "%.2f"|format(rm.get("tackles",{}).get("per90",0)|float) }}</div>
-          <div class="stat-chip-lbl">Tkl/90</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">&euro;{{ "{:,}".format(player.get("wage_eur",0)) }}</div>
-          <div class="stat-chip-lbl">Wage/wk</div>
-        </div>
-        {% else %}
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ player.get("overall_rating","—") }}</div>
-          <div class="stat-chip-lbl">Overall</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ player.get("goals_per_season","—") }}</div>
-          <div class="stat-chip-lbl">Goals/Ssn</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ player.get("assists_per_season","—") }}</div>
-          <div class="stat-chip-lbl">Ast/Ssn</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ player.get("pass_accuracy","—") }}%</div>
-          <div class="stat-chip-lbl">Pass Acc</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">{{ player.get("sprint_speed","—") }}</div>
-          <div class="stat-chip-lbl">Pace</div>
-        </div>
-        <div class="stat-chip">
-          <div class="stat-chip-val">&euro;{{ "{:,}".format(player.get("wage_eur",0)) }}</div>
-          <div class="stat-chip-lbl">Wage/wk</div>
-        </div>
-        {% endif %}
-      </div>
-
-      {# Abstain banner #}
-      {% if player.get("abstain") %}
-      <div class="abstain-banner">
-        INSUFFICIENT DATA &mdash; {{ player.get("abstain_reason","Data too sparse for a reliable verdict.") }}
-      </div>
-      {% endif %}
-
-      {# ── Two-column body ── #}
-      <div class="player-body cf">
-
-        {# LEFT: verdict + scout intel + S&W #}
-        <div class="player-col-left">
-
-          {# Tactical verdict #}
-          {% set verdict = player.get("tactical_verdict", "") %}
-          {% if verdict %}
-          <div class="verdict-box">&ldquo;{{ verdict }}&rdquo;</div>
-          {% endif %}
-
-          {# Scout intelligence (web search / Tavily) #}
-          {% set note = player.get("scout_note","") %}
-          {% if note %}
-          <div class="intel-box">
-            <div class="intel-label">Scout Intelligence &mdash; Live Form &amp; Injury Data</div>
-            <div class="intel-text">{{ note[:420] }}{% if note|length > 420 %}&hellip;{% endif %}</div>
-          </div>
-          {% endif %}
-
-          {# Strengths & weaknesses as pills #}
-          <div class="sw-section cf">
-            <div class="sw-half">
-              <div class="sw-heading green">Strengths</div>
-              <div class="pill-row">
-                {% for s in player.get("strengths",[]) %}
-                <span class="pill pill-green">{{ s }}</span>
-                {% else %}
-                <span class="pill pill-green">High tactical fit</span>
-                {% endfor %}
-              </div>
-            </div>
-            <div class="sw-half">
-              <div class="sw-heading red">Risk Factors</div>
-              <div class="pill-row">
-                {% for w in player.get("weaknesses",[]) %}
-                <span class="pill pill-red">{{ w }}</span>
-                {% else %}
-                <span class="pill pill-red">Market competition expected</span>
-                {% endfor %}
-              </div>
-            </div>
-          </div>
-
-          {# Narrative (GPT-generated) #}
-          {% set narr = (narratives.player_narratives | default({})).get(player.get("name",""), "") %}
-          {% if narr %}
-          <div style="font-size:8.5pt; color:var(--muted); line-height:1.7; margin-top:10px;">{{ narr }}</div>
-          {% endif %}
-
-        </div>{# /left #}
-
-        {# RIGHT: trait bars + confidence #}
-        <div class="player-col-right">
-
-          {% set breakdown = player.get("per_trait_breakdown",[]) %}
-          {% if breakdown %}
-          <div class="trait-bars-title">Trait Scores — Deterministic</div>
-          {% for t in breakdown[:8] %}
-          {% if t.score != none %}
-          {% set pct = (t.score|float * 100)|int %}
-          <div class="trait-bar-row">
-            <div class="tbar-label">{{ t.trait | replace("_"," ") | title }}</div>
-            <div class="tbar-track">
-              <div class="tbar-fill" style="width:{{ pct }}%; background: {% if pct >= 75 %}var(--green){% elif pct >= 50 %}var(--accent){% elif pct >= 30 %}var(--gold){% else %}var(--red){% endif %};"></div>
-            </div>
-            <div class="tbar-score">{{ pct }}</div>
-          </div>
-          {% endif %}
-          {% endfor %}
-
-          {% set qgaps = player.get("qualitative_gaps",[]) %}
-          {% if qgaps %}
-          <div style="font-size:6.5pt; color:var(--muted); margin-top:5px;">
-            LLM-assessed: {% for g in qgaps %}{{ g.trait }}{% if not loop.last %}, {% endif %}{% endfor %}
-          </div>
-          {% endif %}
-          {% endif %}
-
-          {# Confidence badges #}
-          {% set mfit = player.get("measurable_fit") %}
-          {% set tcov = player.get("trait_coverage") %}
-          {% set conf = player.get("confidence") %}
-          <div class="conf-row">
-            {% if mfit != none %}
-            <span class="conf-chip conf-high" style="background:rgba(0,212,170,0.08); border-color:rgba(0,212,170,0.3); color:var(--accent);">
-              Measurable Fit: {{ "%.1f"|format(mfit|float) }}/100
-            </span>
-            {% endif %}
-            {% if tcov != none %}
-            {% set tcov_f = tcov|float %}
-            <span class="conf-chip {% if tcov_f >= 0.5 %}conf-high{% elif tcov_f >= 0.3 %}conf-medium{% else %}conf-low{% endif %}">
-              Coverage: {{ "%.0f%%"|format(tcov_f * 100) }}
-              {% if tcov_f < 0.4 %} ⚠{% endif %}
-            </span>
-            {% endif %}
-            {% if conf != none %}
-            {% set cf = conf|float %}
-            <span class="conf-chip {% if cf >= 0.70 %}conf-high{% elif cf >= 0.45 %}conf-medium{% else %}conf-low{% endif %}">
-              Confidence: {{ "%.0f%%"|format(cf * 100) }}
-            </span>
-            {% endif %}
-          </div>
-
-          {# Tactical reference #}
-          {% set tref = player.get("reference_to_tactics", player.get("matched_traits",[])) %}
-          {% if tref %}
-          <div style="margin-top:12px; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
-            <div style="font-size:7pt; color:var(--accent); font-weight:700; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;">Tactical Reference</div>
-            <div style="font-size:8pt; color:var(--muted);">
-              {% if tref is string %}{{ tref[:200] }}
-              {% else %}{{ tref | join(", ") }}{% endif %}
-            </div>
-          </div>
-          {% endif %}
-
-        </div>{# /right #}
-      </div>{# /body #}
-
-      {# Financial row #}
-      <div class="financial-row">
-        <span class="fin-chip">Wage: &euro;{{ "{:,}".format(player.get("wage_eur",0)) }}/wk</span>
-        {% set veur = player.get("value_eur",0) %}
-        {% if veur %}
-        <span class="fin-chip">&euro;{{ "{:,.1f}M".format(veur / 1000000) }} market value</span>
-        {% endif %}
-        {% if player.get("wage_estimated") %}
-        <span class="fin-note">* wage estimated from league tier</span>
-        {% endif %}
-      </div>
-
-    </div>{# /player-card #}
-  </div>
-</div>
-{% endfor %}
-
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-{# VISUAL ANALYTICS                                                            #}
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-{% if charts %}
-{% set guaranteed_charts = charts | selectattr("guaranteed", "defined") | selectattr("guaranteed") | list %}
-{% set ai_charts = charts | rejectattr("guaranteed", "defined") | list + (charts | selectattr("guaranteed", "defined") | rejectattr("guaranteed") | list) %}
-
-<div class="page">
-  <div class="section-page">
-    {% set chart_pg = player_count + 3 %}
-    <div class="page-header cf">
-      <div class="page-header-left">
-        <span class="section-tag">{{ "%02d"|format(player_count + 2) }}</span>
-        <span class="section-title">Visual Analytics</span>
-      </div>
-      <div class="page-header-right">Page {{ chart_pg }}</div>
-    </div>
-
-    {# Guaranteed: Fit ranking (full width) #}
-    {% set fit_chart = guaranteed_charts | selectattr("filename", "match", "^00_.*") | list %}
-    {% if fit_chart %}
-    <div class="chart-section-label">Comparative Ranking</div>
-    <div class="chart-grid">
-      <div class="chart-box full">
-        <div class="chart-box-title">{{ fit_chart[0].name }}</div>
-        <img src="data:image/png;base64,{{ fit_chart[0].b64 }}" alt="{{ fit_chart[0].name }}" />
-      </div>
-    </div>
-    {% endif %}
-
-    {# Guaranteed: Radar + Wage side by side #}
-    {% set radar_chart = guaranteed_charts | selectattr("filename", "match", "^01_.*") | list %}
-    {% set wage_chart  = guaranteed_charts | selectattr("filename", "match", "^04_.*") | list %}
-    {% if radar_chart or wage_chart %}
-    <div class="chart-section-label">Trait Profile &amp; Value Positioning</div>
-    <div class="chart-grid">
-      {% if radar_chart %}
-      <div class="chart-box {% if not wage_chart %}full{% endif %}">
-        <div class="chart-box-title">{{ radar_chart[0].name }}</div>
-        <img src="data:image/png;base64,{{ radar_chart[0].b64 }}" alt="{{ radar_chart[0].name }}" />
-      </div>
-      {% endif %}
-      {% if wage_chart %}
-      <div class="chart-box">
-        <div class="chart-box-title">{{ wage_chart[0].name }}</div>
-        <img src="data:image/png;base64,{{ wage_chart[0].b64 }}" alt="{{ wage_chart[0].name }}" />
-      </div>
-      {% endif %}
-    </div>
-    {% endif %}
-
-    {# Guaranteed: Per-player percentile bars #}
-    {% set pct_charts = guaranteed_charts | selectattr("filename", "match", "^02_.*") | list %}
-    {% if pct_charts %}
-    <div class="chart-section-label">Individual Performance Percentiles</div>
-    <div class="chart-grid">
-      {% for ch in pct_charts %}
-      <div class="chart-box {% if loop.index % 2 == 0 %}{% else %}{% endif %}">
-        <div class="chart-box-title">{{ ch.name }}</div>
-        <img src="data:image/png;base64,{{ ch.b64 }}" alt="{{ ch.name }}" />
-      </div>
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    {# AI-generated charts #}
-    {% if ai_charts %}
-    <div class="chart-section-label">AI-Generated Analysis Charts</div>
-    <div class="chart-grid">
-      {% for ch in ai_charts %}
-      {% if ch.b64 %}
-      <div class="chart-box {% if 'Head To Head' in ch.name or loop.index == 1 %}full{% endif %}"
-           style="page-break-inside:avoid;">
-        <div class="chart-box-title">{{ ch.name }}</div>
-        <img src="data:image/png;base64,{{ ch.b64 }}" alt="{{ ch.name }}" />
-      </div>
-      {% endif %}
-      {% endfor %}
-    </div>
-    {% endif %}
-
-  </div>
-</div>
+{% if narratives.executive_summary %}
+  <p class="prose">{{ narratives.executive_summary }}</p>
 {% endif %}
 
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-{# TACTICAL APPENDIX & CONCLUSION                                             #}
-{# ═══════════════════════════════════════════════════════════════════════════ #}
-<div class="page">
-  <div class="section-page">
-    {% set final_pg = player_count + (4 if charts else 3) %}
-    <div class="page-header cf">
-      <div class="page-header-left">
-        <span class="section-tag">{{ "%02d"|format(player_count + (3 if charts else 2)) }}</span>
-        <span class="section-title">Tactical Appendix &amp; Final Verdict</span>
-      </div>
-      <div class="page-header-right">Page {{ final_pg }}</div>
-    </div>
+{# Coverage / comparability caveats — only when they actually apply. #}
+{% set thin = ranked_players|selectattr('trait_coverage','defined')
+              |selectattr('trait_coverage','lessthan',0.4)|list %}
+{% set profiles = ranked_players|map(attribute='used_position_key')|reject('none')|unique|list %}
+{% if thin %}
+  <div class="notice">
+    <b>Thin evidence on {{ thin|length }} candidate{{ 's' if thin|length > 1 else '' }}.</b>
+    Fewer than 40% of the traits {{ club }} asks for could be measured for
+    {{ thin|map(attribute='name')|join(', ') }}. Their scores rest on a small
+    part of the requirement and should not be read against the better-covered
+    candidates without allowing for that.
+  </div>
+{% endif %}
+{% if profiles|length > 1 %}
+  <div class="notice">
+    <b>Mixed position profiles.</b> Candidates were graded against different
+    requirement sets ({{ profiles|map('replace','_',' ')|join(', ') }}). The
+    <em>Scored as</em> column states which. Scores from different profiles answer
+    different questions and are not strictly comparable.
+  </div>
+{% endif %}
 
-    {# Tactical system appendix #}
-    <div class="appendix-box">
-      <div class="appendix-label">Team Tactical System &amp; Context</div>
-      <div class="appendix-text">{{ narratives.tactical_appendix | default('No tactical context provided.') }}</div>
-    </div>
+{# ══ 3. Shortlist ═══════════════════════════════════════════════════════ #}
+<div class="sec"><span class="idx">02</span><h2>Shortlist</h2></div>
+<table>
+  <thead>
+    <tr>
+      <th></th><th>Player</th><th>Club</th><th class="r">Age</th>
+      <th>Scored as</th>
+      <th class="r">Fit</th><th class="r">Cov.</th><th class="r">Conf.</th>
+      <th class="r">Wage/wk</th><th class="r">Value</th><th>Contract</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in ranked_players %}
+    {% set fit = p.get('demonstrated_fit') if p.get('demonstrated_fit') is not none
+                 else p.get('measurable_fit') %}
+    {% set cv = p.get('trait_coverage') %}
+    {% set cf = p.get('confidence') %}
+    <tr>
+      <td class="rank">{{ loop.index }}</td>
+      <td class="who">{{ p.get('name','') }}</td>
+      <td class="where">{{ p.get('squad','') }}</td>
+      <td class="r">{{ p.get('age') or '&mdash;' }}</td>
+      <td class="where">
+        {{ p.get('used_position_key','')|replace('_',' ') or '&mdash;' }}
+      </td>
+      <td class="r"><b>{{ num(fit) }}</b></td>
+      <td class="r">{{ num(cv|float * 100 if cv is not none else none, 0, '%') }}</td>
+      <td class="r">{{ num(cf|float * 100 if cf is not none else none, 0, '%') }}</td>
+      <td class="r">
+        {%- if p.get('wage_low') and p.get('wage_high') -%}
+          {{ money(p.wage_low) }}&ndash;{{ money(p.wage_high) }}<span class="src"> est</span>
+        {%- elif p.get('wage_eur') -%}
+          {{ money(p.wage_eur) }}{% if p.get('wage_estimated', True) %}<span class="src"> est</span>{% endif %}
+        {%- else -%}<span class="na">&mdash;</span>{%- endif -%}
+      </td>
+      <td class="r">
+        {{ money(p.get('value_eur')) }}
+        {%- if p.get('over_fee_budget') %} <span class="chip bad">over</span>{% endif -%}
+      </td>
+      <td class="where">{{ p.get('contract_expires') or '&mdash;' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="src" style="margin-top:var(--s2)">
+  Fit = demonstrated fit: the share of {{ club }}'s stated requirement the player
+  has measurably met, with unmeasured requirements counted as unmet.
+  Cov. = proportion of required traits that could be measured at all.
+  Wages marked <b>est</b> are modelled from league, minutes and age, not contract data.
+  Values are Transfermarkt estimates.
+</p>
 
-    {# Tactical evaluation summary #}
-    {% if tactical_summary %}
-    <div class="appendix-box" style="border-color:rgba(255,107,53,0.25); background:rgba(255,107,53,0.04);">
-      <div class="appendix-label" style="color:var(--accent2);">Tactical Evaluation Summary</div>
-      <div class="appendix-text">{{ tactical_summary }}</div>
-    </div>
+{% set fn = selection_funnel or {} %}
+{% if fn.get('cohort') and n < 3 %}
+  <div class="notice">
+    <b>Only {{ n }} candidate{{ 's' if n != 1 else '' }} met this brief.</b>
+    Of {{ fn.cohort }} players considered at this position:
+    {% if fn.get('already_at_club') %}{{ fn.already_at_club }} already at {{ club }};{% endif %}
+    {% if fn.get('wrong_primary_position') %}{{ fn.wrong_primary_position }} play the position only as a secondary role;{% endif %}
+    {% if fn.get('over_fee_ceiling') %}<b>{{ fn.over_fee_ceiling }} priced above the fee ceiling</b>{% if fn.get('cheapest_excluded_fee_eur') %} (cheapest excluded: {{ money(fn.cheapest_excluded_fee_eur) }}){% endif %};{% endif %}
+    {% if fn.get('over_wage_ceiling') %}<b>{{ fn.over_wage_ceiling }} above the wage ceiling</b>{% if fn.get('lowest_excluded_wage_eur') %} (lowest excluded: {{ money(fn.lowest_excluded_wage_eur) }}/wk){% endif %};{% endif %}
+    {% if fn.get('over_wage_on_confirmation') %}{{ fn.over_wage_on_confirmation }} dropped once a confirmed wage exceeded the ceiling;{% endif %}
+    leaving {{ fn.get('shortlisted', n) }}.
+    Raising whichever ceiling did most of the cutting is the fastest way to widen
+    the field.
+  </div>
+{% endif %}
+
+{% set fit_chart = charts|selectattr('filename','match','^00_')|list %}
+{% set val_chart = charts|selectattr('filename','match','^04_')|list %}
+{% if fit_chart or val_chart %}
+  <div class="sec"><span class="idx">03</span><h2>Comparison</h2></div>
+  {% for ch in (fit_chart + val_chart) %}
+    {% if ch.b64 %}
+      <figure>
+        <img src="data:image/png;base64,{{ ch.b64 }}" alt="{{ ch.name }}">
+        <figcaption>{{ ch.name }}</figcaption>
+      </figure>
     {% endif %}
+  {% endfor %}
+{% endif %}
 
-    {# Conclusion #}
-    <div class="conclusion-box">
-      <div class="conclusion-title">Final Recommendation</div>
-      <div class="conclusion-text">{{ narratives.conclusion | default('') }}</div>
+{# ══ 4. Per-candidate pages ═════════════════════════════════════════════ #}
+{% for p in ranked_players %}
+  {% set rm = p.get('raw_metrics') or {} %}
+  {% set fit = p.get('demonstrated_fit') if p.get('demonstrated_fit') is not none
+               else p.get('measurable_fit') %}
+  {% set gaps = p.get('qualitative_gaps') or [] %}
+  {% set scored = p.get('per_trait_breakdown') or [] %}
 
-      {# Dynamic confidence badge #}
-      {% if ranked_players %}
-      {% set conf_vals = [] %}
-      {% for p in ranked_players %}
-        {% if p.get("confidence") != none %}
-          {% set _ = conf_vals.append(p.get("confidence")|float) %}
-        {% endif %}
-      {% endfor %}
-      {% if conf_vals %}
-      {% set avg_conf = conf_vals | sum / conf_vals | length %}
-      <div class="conf-badge {% if avg_conf >= 0.70 %}confidence-high{% elif avg_conf >= 0.45 %}confidence-medium{% else %}confidence-low{% endif %}"
-           style="{% if avg_conf >= 0.70 %}background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.4); color:var(--green);{% elif avg_conf >= 0.45 %}background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); color:var(--gold);{% else %}background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); color:var(--red);{% endif %}">
-        {% if avg_conf >= 0.70 %}High Confidence{% elif avg_conf >= 0.45 %}Medium Confidence{% else %}Low Confidence{% endif %}
-        &mdash; {{ "%.0f%%"|format(avg_conf * 100) }}
-        {% if avg_conf < 0.70 %} &mdash; Additional scouting recommended{% endif %}
+  <div class="page-break"></div>
+  <div class="card-head">
+    <div>
+      <div class="eyebrow">Candidate {{ loop.index }} of {{ n }}</div>
+      <h2 style="font-size:18pt; margin-top:2px">{{ p.get('name','') }}</h2>
+      <div class="pick-sub">
+        {{ p.get('squad','') }} &middot; {{ p.get('league','') }} &middot;
+        {{ p.get('position','') }} &middot; age {{ p.get('age') or '&mdash;' }}
+        &middot; {{ p.get('minutes') or 0 }} min ({{ num(p.get('season_90s'), 1) }} 90s)
       </div>
-      {% endif %}
-      {% endif %}
     </div>
-
-    {# Risk flags #}
-    {% if financial_decision.get("risk_flags") %}
-    <div class="risk-box">
-      <div class="risk-label">Financial Risk Flags</div>
-      {% for flag in financial_decision.get("risk_flags",[]) %}
-      <div class="risk-item">&bull; {{ flag }}</div>
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    <div class="report-footer">
-      Generated by {{ team_name }} AI Management System &nbsp;&middot;&nbsp; {{ generated_at }}
-      &nbsp;&middot;&nbsp; Run #{{ run_id[:8] }}
-      &nbsp;&middot;&nbsp; Powered by GPT-4.1-mini · Multi-Agent AI · FBref Data
-      {% if langsmith_trace_url %}
-      &nbsp;&middot;&nbsp;
-      <a href="{{ langsmith_trace_url }}" style="color:var(--accent); text-decoration:none;">
-        View LangSmith Trace ↗
-      </a>
-      {% endif %}
-      &nbsp;&middot;&nbsp; CONFIDENTIAL — For Internal Use Only
+    <div class="card-score">
+      <div class="v">{{ num(fit) }}</div>
+      <div class="l">Demonstrated fit</div>
     </div>
   </div>
+
+  {% if p.get('abstain') %}
+    <div class="notice bad">
+      <b>No verdict issued.</b> {{ p.get('abstain_reason')
+        or 'The available evidence is too thin to support a recommendation.' }}
+    </div>
+  {% endif %}
+
+  {% if p.get('over_fee_budget') %}
+    <div class="notice">
+      <b>Above the fee ceiling.</b> {{ p.get('fee_budget_note', '') }}. Candidates
+      over the ceiling are meant to be excluded before shortlisting, so treat this
+      entry as unverified: the valuation arrived after the budget filter ran.
+    </div>
+  {% endif %}
+
+  <div class="facts avoid-break">
+    <div class="fact">
+      <div class="k">Wage</div>
+      <div class="v">
+        {%- if p.get('wage_low') and p.get('wage_high') -%}
+          {{ money(p.wage_low) }}&ndash;{{ money(p.wage_high) }}
+        {%- elif p.get('wage_eur') -%}{{ money(p.wage_eur) }}
+        {%- else -%}&mdash;{%- endif -%}
+      </div>
+      <div class="n">
+        {%- if not p.get('wage_eur') -%}not available
+        {%- elif p.get('wage_source') == 'capology' -%}per week &middot; contract data
+        {%- elif p.get('wage_source') == 'market_value' -%}
+          per week &middot; modelled from market value
+        {%- else -%}per week &middot; estimated from league, minutes and age
+        {%- endif -%}
+      </div>
+    </div>
+    <div class="fact">
+      <div class="k">Market value</div>
+      <div class="v">{{ money(p.get('value_eur')) }}</div>
+      <div class="n">
+        {%- if p.get('over_fee_budget') -%}
+          <span style="color:var(--bad)">over the fee ceiling</span>
+        {%- elif p.get('value_eur') -%}
+          Transfermarkt{% if p.get('value_as_of') %} &middot; as of {{ p.value_as_of }}{% endif %}
+        {%- else -%}unpublished{%- endif -%}
+      </div>
+    </div>
+    <div class="fact">
+      <div class="k">Contract</div>
+      <div class="v">{{ p.get('contract_expires') or '&mdash;' }}</div>
+      <div class="n">
+        {%- if p.get('contract_years_left') is not none -%}
+          {{ p.contract_years_left }} yrs left
+        {%- elif p.get('contract_expires') -%}expiry
+        {%- else -%}availability unknown{%- endif -%}
+      </div>
+    </div>
+    <div class="fact">
+      <div class="k">Evidence</div>
+      <div class="v">{{ num((p.get('trait_coverage') or 0)|float * 100, 0, '%') }}</div>
+      <div class="n">of requirement measured{% if p.get('confidence') is not none %}
+        &middot; conf {{ "%.0f"|format(p.confidence|float * 100) }}%{% endif %}</div>
+    </div>
+  </div>
+
+  {% if p.get('economic_verdict') %}
+    <table style="font-size:8.5pt; margin-bottom:var(--s4)">
+      <thead><tr>
+        <th>Cost of the deal</th><th class="r">Fee</th><th class="r">Wage/yr</th>
+        <th class="r">Fee amortised/yr</th><th class="r">Year-one cash</th>
+        <th class="r">Annual book cost</th>
+      </tr></thead>
+      <tbody><tr>
+        <td class="where">{{ p.economic_verdict }}</td>
+        <td class="r">{{ money(p.get('fee_eur')) }}</td>
+        <td class="r">{{ money(p.get('wage_annual_eur')) }}</td>
+        <td class="r">{{ money(p.get('amortised_fee_annual_eur')) }}</td>
+        <td class="r">{{ money(p.get('first_year_cash_eur')) }}</td>
+        <td class="r"><b>{{ money(p.get('annual_book_cost_eur')) }}</b></td>
+      </tr></tbody>
+    </table>
+    <p class="src" style="margin-top:calc(-1 * var(--s3)); margin-bottom:var(--s4)">
+      {{ p.get('fee_basis', '') }}. Amortisation assumes a
+      {{ p.get('deal_years_assumed', 4) }}-year contract. Wage is the weekly figure
+      &times;52 and inherits its own estimate caveat.
+    </p>
+  {% endif %}
+
+  <div class="cols">
+    <div>
+      <h4 class="eyebrow">Requirement match</h4>
+      {% if scored %}
+        <ul class="traits">
+          {% for t in scored|sort(attribute='score', reverse=true) %}
+            {% set pc = (t.score|float * 100)|round|int %}
+            <li>
+              <span>{{ t.trait|replace('_',' ') }}
+                <span class="src">{{ t.source }}</span></span>
+              <span class="bar"><i class="{{ 'good' if pc >= 70 else 'warn' if pc >= 40 else 'bad' }}"
+                    style="width:{{ pc }}%"></i></span>
+              <span class="sc">{{ pc }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="prose"><em>None of {{ club }}'s required traits could be scored
+        from the available data.</em></p>
+      {% endif %}
+
+      {% if gaps %}
+        <h4 class="eyebrow" style="margin-top:var(--s4)">Not measured</h4>
+        <p class="prose" style="font-size:9pt">
+          {{ gaps|map(attribute='trait')|map('replace','_',' ')|join(' &middot; ')|safe }}
+        </p>
+        <p class="src">
+          {{ club }} asks for {{ gaps|length }} trait{{ 's' if gaps|length > 1 else '' }}
+          the source data does not cover. They count as unmet in the fit score
+          above; they are not evidence against the player.
+        </p>
+      {% endif %}
+
+      <h4 class="eyebrow" style="margin-top:var(--s4)">Output per 90</h4>
+      <table style="font-size:8.5pt">
+        <thead><tr><th>Metric</th><th class="r">Per 90</th><th class="r">Pctile</th></tr></thead>
+        <tbody>
+        {% for key, label in [
+             ('goals','Goals'), ('assists','Assists'), ('xg','xG'), ('xa','xAG'),
+             ('shots','Shots'), ('prg_passes','Prog. passes'),
+             ('prg_carries','Prog. carries'), ('interceptions','Interceptions'),
+             ('tackles','Tackles'), ('pass_cmp_pct','Pass completion %') ] %}
+          <tr>
+            <td>{{ label }}</td>
+            <td class="r">{{ metric(rm, key) }}</td>
+            <td class="r">{{ pctile(rm, key) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="src">Percentile = rank among {{ p.get('position','') }} players in
+        {{ p.get('league','the same league') }}, {{ season }}. An em dash means the
+        metric is absent from the source, not that the value is zero.</p>
+    </div>
+
+    <div class="prose">
+      {% if p.get('tactical_verdict') %}
+        <h4>Verdict</h4><p>{{ p.tactical_verdict }}</p>
+      {% endif %}
+      {% set narr = (narratives.player_narratives | default({})).get(p.get('name',''), '') %}
+      {% if narr %}<p>{{ narr }}</p>{% endif %}
+
+      {% if p.get('strengths') %}
+        <h4>Strengths</h4>
+        <ul>{% for s in p.strengths %}<li>{{ s }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if p.get('weaknesses') %}
+        <h4>Reservations</h4>
+        <ul>{% for w in p.weaknesses %}<li>{{ w }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if p.get('scout_note') %}
+        <h4>Scout note</h4><p>{{ p.scout_note }}</p>
+      {% endif %}
+      {% if p.get('news') %}
+        <h4>Recent coverage</h4>
+        <p style="font-size:8.5pt; color:var(--ink-3)">{{ p.news }}</p>
+      {% endif %}
+      {% if p.get('reference_to_tactics') %}
+        <h4>Tactical basis</h4>
+        <p style="font-size:9pt">
+          {%- if p.reference_to_tactics is string -%}{{ p.reference_to_tactics }}
+          {%- else -%}{{ p.reference_to_tactics|join(', ') }}{%- endif -%}
+        </p>
+      {% endif %}
+    </div>
+  </div>
+
+  {% set own = charts|selectattr('filename','match','^02_percentile_' ~ '%02d'|format(loop.index0))|list %}
+  {% for ch in own %}
+    {% if ch.b64 %}
+      <figure><img src="data:image/png;base64,{{ ch.b64 }}" alt="{{ ch.name }}">
+        <figcaption>{{ ch.name }}</figcaption></figure>
+    {% endif %}
+  {% endfor %}
+{% endfor %}
+
+{# ══ 5. Method and provenance ═══════════════════════════════════════════ #}
+<div class="page-break"></div>
+<div class="sec"><span class="idx">{{ "%02d"|format(n + 3) }}</span><h2>Method &amp; provenance</h2></div>
+
+<dl class="method">
+  <dt>How the fit score is built</dt>
+  <dd>{{ club }}'s recruitment profile lists the traits it wants for the position.
+    Each trait is scored from a per-90 percentile within the player's position
+    cohort, then weighted by evidence tier — a directly measured metric counts
+    fully, a correlated stand-in at 0.7. <b>Demonstrated fit</b> divides the total
+    by the club's full requirement, so a trait that could not be measured counts
+    as unmet. <b>Measurable fit</b> divides only by what was measured, which is
+    why it runs higher and is not used for ranking.</dd>
+
+  <dt>Confidence</dt>
+  <dd>Minutes played and the club profile's own data quality, multiplied by the
+    proportion of the requirement that could be measured. Coverage is a multiplier
+    rather than one term among several, so playing time cannot substitute for
+    having measured what the club asked for.</dd>
+
+  {% set gaps_all = [] %}
+  {% for p in ranked_players %}{% for g in (p.get('qualitative_gaps') or []) %}
+    {% if gaps_all.append(g.trait) %}{% endif %}
+  {% endfor %}{% endfor %}
+  {% if gaps_all %}
+    <dt>What could not be measured</dt>
+    <dd>{{ gaps_all|unique|map('replace','_',' ')|join(' &middot; ')|safe }}.
+      These are absent from the source data for every candidate. Any judgement on
+      them in the prose above is qualitative, and is not in the fit score.</dd>
+  {% endif %}
+
+  <dt>How wages are estimated</dt>
+  <dd>A wage band is modelled from the player's Transfermarkt valuation, which
+    tracks pay far more closely than a league or minutes tier does — wage rises
+    with value but sub-linearly, so the curve is calibrated on published Premier
+    League figures and scaled down for the other four leagues. The band is
+    &plusmn;25%, because reported wages are ranges and press figures often fold in
+    bonuses. Where no valuation exists the estimate falls back to league, minutes
+    and age, which is materially less reliable and labelled as such.</dd>
+
+  <dt>Sources</dt>
+  <dd>Player performance: FBref, {{ season }} Big-5 leagues, from a cache built
+    offline. Market value and contract expiry: Transfermarkt, dated per player on
+    the candidate pages. Wages: contract data where available, otherwise modelled
+    from league, minutes and age and labelled <b>est</b>. Club tactical profile
+    and required traits: internal knowledge base.</dd>
+
+  <dt>Limits</dt>
+  <dd>Percentiles are relative to the position cohort in the stated league and
+    season, not to all of football. Market values are third-party estimates, not
+    asking prices. A modelled wage is a band, not a contract figure. No candidate
+    already at {{ club }} is included, and availability is only as good as the
+    contract date shown.</dd>
+</dl>
+
+{% if narratives.conclusion %}
+  <div class="sec"><h2>Conclusion</h2></div>
+  <p class="prose">{{ narratives.conclusion }}</p>
+{% endif %}
+
+{% set econ = financial_decision.get('deal_economics') or {} %}
+{% if econ %}
+  <div class="sec"><h2>Cost of the shortlist</h2></div>
+  <table style="font-size:9pt; max-width:520px">
+    <tbody>
+      <tr><td>Wage ceiling</td><td class="r">{{ money(econ.get('wage_ceiling_eur')) }}/wk</td></tr>
+      <tr><td>Fee ceiling</td><td class="r">{{ money(econ.get('fee_ceiling_eur')) }}</td></tr>
+      <tr><td>Candidates with a published valuation</td>
+          <td class="r">{{ econ.get('candidates_with_a_valuation', 0) }}
+              of {{ econ.get('candidates_costed', 0) }}</td></tr>
+      <tr><td>Inside both ceilings</td>
+          <td class="r"><b>{{ econ.get('candidates_within_budget', 0) }}</b></td></tr>
+      {% if econ.get('cheapest_affordable') %}
+        <tr><td>Lowest fee among affordable candidates</td>
+            <td class="r">{{ econ.cheapest_affordable }}</td></tr>
+      {% endif %}
+      {% if econ.get('total_fee_if_all_signed_eur') %}
+        <tr><td>Combined fees if every candidate were signed</td>
+            <td class="r">{{ money(econ.total_fee_if_all_signed_eur) }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <p class="src">{{ econ.get('fee_basis_note', '') }}</p>
+{% endif %}
+
+{% if financial_decision.get('risk_flags') %}
+  <div class="sec"><h2>Financial risk flags</h2></div>
+  <ul class="prose">
+    {% for flag in financial_decision.risk_flags %}<li>{{ flag }}</li>{% endfor %}
+  </ul>
+{% endif %}
+
+{% if narratives.financial_section %}
+  <div class="sec"><h2>Financial commentary</h2></div>
+  <p class="prose">{{ narratives.financial_section }}</p>
+{% endif %}
+
+{% endif %}{# ranked_players #}
+
+<div class="foot">
+  {{ club }} recruitment &middot; run {{ run_id[:8] }} &middot; compiled {{ generated_at }}
+  &middot; performance data {{ season }}
+  {%- if langsmith_trace_url %} &middot; <a href="{{ langsmith_trace_url }}">execution trace</a>{% endif %}
+  <br>Confidential — for internal use. Figures marked as estimates are modelled,
+  not contractual.
 </div>
 
-</body>
-</html>
+</div>

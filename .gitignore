@@ -61,3 +61,8 @@ test_*.py
 check_db.py
 benchmark_debate.py
 pytest.ini
+data/_build_stage/
+data/*.db.bak
+benchmarks/
+reports/_audit_findings.json
+data/*.pre_sofascore

@@ -74,9 +74,9 @@ Return ONLY valid JSON — no markdown, no extra text:
       {{"trait": "link_play", "verdict": "uncertain", "reasoning": "no direct evidence in available data"}}
     ],
     "matched_traits": ["box_movement", "pressing_intensity"],
-    "missing_traits": ["aerial_ability"],
+    "missing_traits": ["aerial_strength"],
     "strengths": ["box_movement score 0.90 (real) — elite movement in the penalty area"],
-    "weaknesses": ["aerial_ability: qualitative gap — no headed goal data available"],
+    "weaknesses": ["aerial_strength: qualitative gap — no headed goal data available"],
     "tactical_verdict": "Strong fit for a possession-based system needing a mobile striker. Confidence: 0.81.",
     "reference_to_tactics": "Club requires strikers with box_movement and pressing triggers (from recruitment profile)."
   }}

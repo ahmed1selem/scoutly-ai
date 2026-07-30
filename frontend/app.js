@@ -289,7 +289,13 @@ function handleEvent(event) {
 
   // Handle Debate states
   if (type === 'draft_ready' || type === 'revision_ready') {
-    appendChatBubble('system', `I've found the following candidates based on your requirements:<div class="chat-shortlist">${renderPlayerCardsHtml(event.ranked_players)}</div>`);
+    const club = event.financial_decision?.team_name || '';
+    const funnel = renderFunnelHtml(event.selection_funnel, club);
+    const lead = (event.ranked_players || []).length
+      ? "I've found the following candidates based on your requirements:"
+      : 'No candidate met this brief.';
+    appendChatBubble('system',
+      `${lead}${funnel}<div class="chat-shortlist">${renderPlayerCardsHtml(event.ranked_players)}</div>`);
   } else if (type === 'chat_message') {
     appendChatBubble(event.sender || 'system', formatMessageWithCards(event.message));
   } else if (type === 'awaiting_review') {
@@ -396,16 +402,99 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Player Card Renderer ──────────────────────────────────────────────────────
 
+// ── Formatting helpers ────────────────────────────────────────────────────────
+// These mirror the PDF report's rules on purpose. A metric that was never
+// measured must read as "—", never as 0 — a real zero and a missing measurement
+// must not look identical.
+
+function metricCell(rm, key, digits = 2) {
+  const m = rm?.[key];
+  if (!m || m.per90 === undefined || m.per90 === null) {
+    return '<span class="na" title="not measured">—</span>';
+  }
+  return Number(m.per90).toFixed(digits);
+}
+
+function money(v) {
+  if (!v) return '—';
+  return v >= 1_000_000
+    ? `€${Math.round(v / 1_000_000)}M`
+    : `€${Number(v).toLocaleString()}`;
+}
+
+function wageText(p) {
+  if (p.wage_low && p.wage_high) {
+    return `€${Number(p.wage_low).toLocaleString()}–€${Number(p.wage_high).toLocaleString()}/wk`;
+  }
+  return p.wage_eur ? `€${Number(p.wage_eur).toLocaleString()}/wk` : '—';
+}
+
+function wageBasis(p) {
+  if (!p.wage_eur) return 'not available';
+  if (p.wage_source === 'capology.com') return 'contract data';
+  if (p.wage_source === 'market_value') return 'modelled from market value';
+  return 'estimated from league, minutes and age';
+}
+
+// Explains a short shortlist instead of leaving the reader to guess.
+function renderFunnelHtml(fn, club) {
+  if (!fn || !fn.cohort) return '';
+  const bits = [];
+  if (fn.already_at_club) bits.push(`${fn.already_at_club} already at ${escapeHtml(club || 'the club')}`);
+  if (fn.wrong_primary_position) bits.push(`${fn.wrong_primary_position} play the position only as a secondary role`);
+  if (fn.over_fee_ceiling) {
+    bits.push(`<b>${fn.over_fee_ceiling} priced above the fee ceiling</b>` +
+      (fn.cheapest_excluded_fee_eur ? ` (cheapest excluded: ${money(fn.cheapest_excluded_fee_eur)})` : ''));
+  }
+  if (fn.over_wage_ceiling) {
+    bits.push(`<b>${fn.over_wage_ceiling} above the wage ceiling</b>` +
+      (fn.lowest_excluded_wage_eur ? ` (lowest excluded: €${Number(fn.lowest_excluded_wage_eur).toLocaleString()}/wk)` : ''));
+  }
+  if (fn.over_wage_on_confirmation) bits.push(`${fn.over_wage_on_confirmation} dropped once a confirmed wage exceeded the ceiling`);
+  if (!bits.length) return '';
+  const n = fn.shortlisted ?? 0;
+  return `<div class="funnel-note">
+    <b>${n === 0 ? 'No candidate met this brief.' : `Only ${n} candidate${n === 1 ? '' : 's'} met this brief.`}</b>
+    Of ${fn.cohort} players considered: ${bits.join('; ')}; leaving ${n}.
+    Raising whichever ceiling did most of the cutting is the fastest way to widen the field.
+  </div>`;
+}
+
 function renderPlayerCardsHtml(players) {
   if (!players || players.length === 0) return '<p>No players found.</p>';
-  
+
   let html = '<div class="player-cards-container">';
   players.forEach((p, idx) => {
-    const goals = p.raw_metrics?.goals?.value || 0;
-    const assists = p.raw_metrics?.assists?.value || 0;
-    const xg = p.raw_metrics?.xg?.value || 0;
-    const fitScore = p.tactical_fit_score !== undefined ? p.tactical_fit_score : '?';
-    
+    const rm = p.raw_metrics || {};
+
+    // demonstrated_fit is the ranking number: it counts requirements that could
+    // not be measured as unmet. measurable_fit normalises over measured traits
+    // only, so it runs higher and would disagree with the ranking and the PDF.
+    const rawFit = p.demonstrated_fit ?? p.tactical_fit_score ?? p.measurable_fit;
+    const hasFit = rawFit !== undefined && rawFit !== null;
+    const fitLabel = hasFit ? `Fit ${Math.round(rawFit)}/100` : 'Insufficient data';
+
+    const cov = p.trait_coverage;
+    const conf = p.confidence;
+    const chips = [];
+    if (cov !== undefined && cov !== null) {
+      const cls = cov >= 0.6 ? 'good' : cov >= 0.4 ? 'warn' : 'bad';
+      chips.push(`<span class="chip ${cls}">${Math.round(cov * 100)}% of requirement measured</span>`);
+    }
+    if (conf !== undefined && conf !== null) {
+      const cls = conf >= 0.6 ? 'good' : conf >= 0.35 ? 'warn' : 'bad';
+      chips.push(`<span class="chip ${cls}">confidence ${Math.round(conf * 100)}%</span>`);
+    }
+    if (p.used_position_key) {
+      chips.push(`<span class="chip">scored as ${escapeHtml(p.used_position_key.replace(/_/g, ' '))}</span>`);
+    }
+    if (p.contract_expires) {
+      chips.push(`<span class="chip">contract to ${escapeHtml(p.contract_expires)}</span>`);
+    }
+
+    const gaps = (p.qualitative_gaps || []).map(g => g.trait);
+    const scored = (p.per_trait_breakdown || []);
+
     html += `
       <details class="player-card">
         <summary class="player-card-header">
@@ -414,32 +503,47 @@ function renderPlayerCardsHtml(players) {
             <span class="player-name">${escapeHtml(p.name || 'Unknown')}</span>
             <span class="player-club">${escapeHtml(p.squad || 'Unknown')} (${p.age || '?'})</span>
           </div>
-          <div class="player-card-score">Fit: ${fitScore}/100</div>
+          <div class="player-card-score">${fitLabel}</div>
         </summary>
         <div class="player-card-body">
+          ${chips.length ? `<div class="chip-row">${chips.join(' ')}</div>` : ''}
+
+          ${p.abstain ? `<div class="funnel-note"><b>No verdict issued.</b> ${escapeHtml(p.abstain_reason || 'Evidence too thin to support a recommendation.')}</div>` : ''}
+
           <div class="player-stats-grid">
-            <div class="stat-box"><strong>Goals:</strong> ${goals}</div>
-            <div class="stat-box"><strong>Assists:</strong> ${assists}</div>
-            <div class="stat-box"><strong>xG:</strong> ${xg}</div>
+            <div class="stat-box"><strong>Goals/90:</strong> ${metricCell(rm, 'goals')}</div>
+            <div class="stat-box"><strong>Assists/90:</strong> ${metricCell(rm, 'assists')}</div>
+            <div class="stat-box"><strong>Tackles/90:</strong> ${metricCell(rm, 'tackles')}</div>
+            <div class="stat-box"><strong>Pass %:</strong> ${rm.pass_cmp_pct ? Number(rm.pass_cmp_pct.value).toFixed(1) : '<span class="na">—</span>'}</div>
             <div class="stat-box"><strong>Minutes:</strong> ${p.minutes || 0}</div>
+            <div class="stat-box"><strong>Wage:</strong> ${wageText(p)}<br><small>${wageBasis(p)}</small></div>
+            <div class="stat-box"><strong>Value:</strong> ${money(p.value_eur)}${p.value_as_of ? `<br><small>Transfermarkt, ${escapeHtml(p.value_as_of)}</small>` : ''}</div>
+            <div class="stat-box"><strong>Cost/yr:</strong> ${money(p.annual_book_cost_eur)}</div>
           </div>
-          
+
           <div class="player-analysis">
-            <h4>Tactical Verdict</h4>
-            <p>${escapeHtml(p.tactical_verdict || 'No verdict provided.')}</p>
-            
+            ${p.economic_verdict ? `<h4>Cost of the deal</h4><p>${escapeHtml(p.economic_verdict)}</p>` : ''}
+
+            ${scored.length ? `<h4>Requirement match</h4><ul>${
+              scored.map(t => `<li>${escapeHtml(String(t.trait).replace(/_/g, ' '))} — ${Math.round(t.score * 100)} <small>(${escapeHtml(t.source)})</small></li>`).join('')
+            }</ul>` : ''}
+
+            ${gaps.length ? `<h4>Not measured</h4><p><small>${
+              gaps.map(g => escapeHtml(String(g).replace(/_/g, ' '))).join(' · ')
+            }<br>These count as unmet in the fit score above; they are not evidence against the player.</small></p>` : ''}
+
+            ${p.tactical_verdict ? `<h4>Tactical Verdict</h4><p>${escapeHtml(p.tactical_verdict)}</p>` : ''}
+
+            ${(p.strengths || []).length || (p.weaknesses || []).length ? `
             <div class="sw-grid">
-              <div class="strengths">
-                <h5>Strengths</h5>
-                <ul>${(p.strengths || []).map(s => `<li>${escapeHtml(s)}</li>`).join('') || '<li>None</li>'}</ul>
-              </div>
-              <div class="weaknesses">
-                <h5>Weaknesses</h5>
-                <ul>${(p.weaknesses || []).map(w => `<li>${escapeHtml(w)}</li>`).join('') || '<li>None</li>'}</ul>
-              </div>
-            </div>
-            
+              ${(p.strengths || []).length ? `<div class="strengths"><h5>Strengths</h5><ul>${
+                p.strengths.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul></div>` : ''}
+              ${(p.weaknesses || []).length ? `<div class="weaknesses"><h5>Reservations</h5><ul>${
+                p.weaknesses.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul></div>` : ''}
+            </div>` : ''}
+
             ${p.scout_note ? `<h4>Scout Note</h4><p>${escapeHtml(p.scout_note)}</p>` : ''}
+            ${p.news ? `<h4>Latest News</h4><p><small>${escapeHtml(p.news)}</small></p>` : ''}
           </div>
         </div>
       </details>

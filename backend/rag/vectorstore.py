@@ -127,12 +127,50 @@ class ClubVectorStore:
         """Return the full structured payload for a specific club (exact match)."""
         return self._payloads.get(club_id)
 
+    def _search_clubs_by_name(self, query: str, n_results: int) -> list[dict]:
+        """
+        Match the query against club names directly.
+
+        The agents always search for a named club ("Liverpool"), so an exact or
+        substring name match is both more accurate than nearest-neighbour search
+        and free of any embedding call — which matters because the chat provider
+        may not offer an embeddings endpoint at all.
+        """
+        q = query.strip().lower()
+        if not q:
+            return []
+
+        exact, partial = [], []
+        for payload in self._payloads.values():
+            name = payload.get("club", {}).get("club_name", "")
+            low = name.lower()
+            if low == q:
+                exact.append(payload)
+            elif low in q or q in low:
+                partial.append(payload)
+
+        # Longer names first, so "Manchester United" beats "Manchester City"
+        # when both are substrings of the query.
+        partial.sort(key=lambda p: len(p.get("club", {}).get("club_name", "")), reverse=True)
+        return (exact + partial)[:n_results]
+
     def search_clubs(self, query: str, n_results: int = 5, filters: dict = None) -> list[dict]:
-        """Semantic search on club narratives → returns list of structured payloads."""
-        vs = self._load_clubs_vs()
+        """Find club profiles by name first, then fall back to semantic search."""
+        by_name = self._search_clubs_by_name(query, n_results)
+        if by_name:
+            return by_name
+
+        try:
+            vs = self._load_clubs_vs()
+        except Exception:
+            return []
         if vs is None:
             return []
-        docs = vs.similarity_search(query, k=n_results)
+        try:
+            docs = vs.similarity_search(query, k=n_results)
+        except Exception:
+            # No reachable embeddings provider — name lookup above is the only path.
+            return []
         results = []
         for doc in docs:
             club_id = doc.metadata.get("club_id")
@@ -142,12 +180,20 @@ class ClubVectorStore:
         return results
 
     def get_tactical_knowledge(self, query: str, n_results: int = 3, filters: dict = None) -> list[str]:
-        """Semantic search on generic tactical-knowledge docs."""
-        vs = self._load_knowledge_vs()
-        if vs is None:
+        """
+        Semantic search on generic tactical-knowledge docs.
+
+        Unlike club lookup this genuinely needs embeddings; with no reachable
+        provider it returns nothing rather than failing the run, and the tactical
+        agent proceeds on the club profile alone.
+        """
+        try:
+            vs = self._load_knowledge_vs()
+            if vs is None:
+                return []
+            return [d.page_content for d in vs.similarity_search(query, k=n_results)]
+        except Exception:
             return []
-        docs = vs.similarity_search(query, k=n_results)
-        return [d.page_content for d in docs]
 
     # ── Compat: expose collection-like count for tests ──────────────────────────
 

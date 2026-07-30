@@ -11,21 +11,102 @@ Flow:
 import asyncio
 import base64
 import json
+import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from openai import AsyncAzureOpenAI
 try:
     from weasyprint import HTML as WeasyHTML
 except Exception:
     WeasyHTML = None
 
-from ..utils.config import settings
+from ..utils.config import settings, make_llm_client
 from ..utils.prompt_loader import PromptLoader
 from .chart_generator import generate_all_guaranteed_charts
+
+
+def _find_chromium() -> str | None:
+    """Locate an installed Chrome/Edge binary for headless PDF printing."""
+    candidates = [
+        os.environ.get("CHROME_PATH", ""),
+        shutil.which("chrome"),
+        shutil.which("msedge"),
+        shutil.which("chromium"),
+        shutil.which("google-chrome"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for path in candidates:
+        if path and Path(path).exists():
+            return path
+    return None
+
+
+def _html_to_pdf_via_chromium(html: str, pdf_path: Path) -> bool:
+    """
+    Render HTML to PDF with headless Chrome.
+
+    WeasyPrint needs native GTK libraries that a stock Windows install does not
+    have, which is why reports were silently downgraded to .html. Chrome is
+    already present on any machine running the scraper and prints the same CSS
+    the browser does, so this produces a real PDF with no extra dependencies.
+    """
+    browser = _find_chromium()
+    if not browser:
+        return False
+
+    # Chrome resolves --print-to-pdf against its own working directory, so the
+    # destination has to be absolute or the file lands somewhere unexpected and
+    # the caller sees a silent failure.
+    target = pdf_path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    proc = None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "report.html"
+        src.write_text(html, encoding="utf-8")
+        try:
+            proc = subprocess.run(
+                [
+                    browser,
+                    "--headless=new",
+                    "--disable-gpu",
+                    "--no-sandbox",
+                    "--no-pdf-header-footer",
+                    "--run-all-compositor-stages-before-draw",
+                    "--virtual-time-budget=10000",
+                    f"--print-to-pdf={target}",
+                    src.resolve().as_uri(),
+                ],
+                capture_output=True,
+                timeout=180,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Chromium print-to-pdf failed: %s", exc)
+            return False
+
+    # Chrome signals success by writing the file; its exit code is unreliable.
+    if target.exists() and target.stat().st_size > 1024:
+        return True
+    logging.getLogger(__name__).warning(
+        "Chromium print-to-pdf produced no usable file (exit %s): %s",
+        getattr(proc, "returncode", "?"),
+        (proc.stderr.decode("utf-8", "replace")[:300] if proc and proc.stderr else ""),
+    )
+    return False
 
 
 def _encode_chart(path: str) -> str:
@@ -61,19 +142,15 @@ class PDFGenerator:
 
     def __init__(self, sse_queue: asyncio.Queue):
         self.queue = sse_queue
-        self._client: AsyncAzureOpenAI | None = None
+        self._client = None
 
     async def emit(self, event: dict) -> None:
         event.setdefault("agent", "pdf_generator")
         await self.queue.put(event)
 
-    def _get_client(self) -> AsyncAzureOpenAI:
+    def _get_client(self):
         if self._client is None:
-            self._client = AsyncAzureOpenAI(
-                api_key=settings.AZURE_OPENAI_API_KEY,
-                api_version=settings.AZURE_OPENAI_API_VERSION,
-                azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-            )
+            self._client = make_llm_client()
         return self._client
 
     async def _generate_narratives(
@@ -121,6 +198,7 @@ class PDFGenerator:
         charts: list[str] | None = None,
         unified_analysis: str = "",
         langsmith_trace_url: str = "",
+        selection_funnel: dict | None = None,
         **kwargs,
     ) -> dict[str, Any]:
         """
@@ -190,6 +268,10 @@ class PDFGenerator:
         )
         # zfill is a Python str method, not a built-in Jinja2 filter
         jinja_env.filters["zfill"] = lambda value, width: str(value).zfill(width)
+        # `match` is an Ansible test, not a Jinja2 one. The template uses it to
+        # pick charts by filename prefix, so without this the whole render raises
+        # TemplateRuntimeError as soon as there is at least one chart.
+        jinja_env.tests["match"] = lambda value, pattern: bool(re.match(pattern, str(value)))
         template = jinja_env.get_template("report.html")
 
         html_content = template.render(
@@ -204,30 +286,52 @@ class PDFGenerator:
             narratives=narratives,
             player_count=len(ranked_players),
             langsmith_trace_url=langsmith_trace_url,
+            selection_funnel=selection_funnel or {},
         )
 
-        # ── Step 4: WeasyPrint → PDF ──────────────────────────────────────
-        await self.emit({"type": "progress", "message": "Converting HTML to PDF via WeasyPrint..."})
+        # ── Step 4: HTML → PDF ────────────────────────────────────────────
+        # Always keep the HTML alongside the PDF: it is the source of truth for
+        # the layout and stays readable if PDF conversion is unavailable.
+        html_path = settings.REPORTS_DIR / f"{run_id}.html"
+        html_path.write_text(html_content, encoding="utf-8")
+
+        pdf_target = settings.REPORTS_DIR / f"{run_id}.pdf"
+        pdf_path = html_path
+        backend = "none"
 
         if WeasyHTML:
-            pdf_path = settings.REPORTS_DIR / f"{run_id}.pdf"
+            await self.emit({"type": "progress", "message": "Converting to PDF via WeasyPrint..."})
             try:
-                WeasyHTML(string=html_content, base_url=str(settings.TEMPLATES_DIR)).write_pdf(str(pdf_path))
-            except Exception as e:
-                # If WeasyPrint fails at runtime, save as HTML
-                pdf_path = settings.REPORTS_DIR / f"{run_id}.html"
-                with open(pdf_path, "w", encoding="utf-8") as f:
-                    f.write(html_content)
-        else:
-            # If WeasyPrint failed to import, save as HTML
-            pdf_path = settings.REPORTS_DIR / f"{run_id}.html"
-            with open(pdf_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
+                WeasyHTML(string=html_content, base_url=str(settings.TEMPLATES_DIR)).write_pdf(str(pdf_target))
+                pdf_path, backend = pdf_target, "weasyprint"
+            except Exception as exc:
+                await self.emit({"type": "progress", "message": f"WeasyPrint failed ({exc}) — trying headless Chrome"})
+
+        if backend == "none":
+            await self.emit({"type": "progress", "message": "Converting to PDF via headless Chrome..."})
+            if await asyncio.to_thread(_html_to_pdf_via_chromium, html_content, pdf_target):
+                pdf_path, backend = pdf_target, "chromium"
+            else:
+                await self.emit({
+                    "type": "progress",
+                    "message": "No PDF backend available — delivering the HTML report "
+                               "(install GTK for WeasyPrint, or Chrome for print-to-PDF)",
+                })
 
         await self.emit({
             "type": "agent_complete",
-            "message": f"Report saved: {pdf_path.name}",
-            "data": {"pdf_path": str(pdf_path), "filename": pdf_path.name},
+            "message": f"Report saved: {pdf_path.name} (via {backend})",
+            "data": {
+                "pdf_path": str(pdf_path),
+                "filename": pdf_path.name,
+                "html_path": str(html_path),
+                "pdf_backend": backend,
+            },
         })
 
-        return {"pdf_path": str(pdf_path), "filename": pdf_path.name}
+        return {
+            "pdf_path": str(pdf_path),
+            "filename": pdf_path.name,
+            "html_path": str(html_path),
+            "pdf_backend": backend,
+        }

@@ -26,6 +26,19 @@ if (-not (Test-Path $vsPath)) {
     Write-Host "Vectorstore built." -ForegroundColor Green
 }
 
+# ── 2b. Check the player cache is populated ───────────────────────────────────
+# The database is built ONCE, offline. Serving a request never scrapes.
+if (-not (Test-Path "data\fbref_cache.db")) {
+    Write-Host "Player cache not found. Build it once with:" -ForegroundColor Red
+    Write-Host "    python -m backend.data_pipeline.cache_builder" -ForegroundColor Yellow
+    exit 1
+}
+python -m backend.data_pipeline.cache_builder --verify
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "WARNING: player cache has metric gaps. Refresh it with:" -ForegroundColor Yellow
+    Write-Host "    python -m backend.data_pipeline.cache_builder" -ForegroundColor Yellow
+}
+
 # ── 3. Start MCP server in a new window ───────────────────────────────────────
 Write-Host "Starting MCP server on port 8005..." -ForegroundColor Cyan
 $mcpJob = Start-Process powershell -ArgumentList @(
@@ -42,12 +55,14 @@ Write-Host "Starting backend on http://localhost:8000 ..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop." -ForegroundColor Yellow
 Write-Host ""
 
-# Unset FBREF_USE_MOCK so local runs use real FBref via Chrome
+# Serve entirely from the pre-built cache — no Chrome, no FBref traffic per request.
 $env:FBREF_USE_MOCK = "false"
+$env:FBREF_LIVE_SCRAPE = "false"
 
+# No --reload: in-flight runs live in an in-memory dict, and a reload drops them,
+# so a debate in progress would 404 on the next directive.
 python -m uvicorn backend.main:app `
     --host 0.0.0.0 --port 8000 `
-    --reload --reload-dir prompts `
     --timeout-keep-alive 1200
 
 # ── 5. Cleanup on exit ────────────────────────────────────────────────────────

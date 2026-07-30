@@ -31,11 +31,12 @@ from typing import Literal
 
 class RunState(BaseModel):
     run_id: str
-    status: Literal["scouting", "awaiting_review", "revising", "finalizing", "done"]
+    status: Literal["scouting", "awaiting_review", "revising", "finalizing", "done", "error"]
     query: str
     financial_decision: dict = {}
     ranked_players: list[dict] = []
     directive_history: list[str] = []
+    selection_funnel: dict = {}
     conversation: list[dict] = []   # chat transcript {role, message}
     revision_count: int = 0
     pdf_path: str = ""
@@ -80,11 +81,76 @@ async def serve_frontend():
 
 @app.get("/api/health")
 async def health_check():
+    """
+    Report whether the pipeline's two hard dependencies are actually usable:
+    the Azure OpenAI deployment and the pre-built player cache. Both fail in
+    ways that only surface deep inside a run otherwise.
+    """
+    checks = await preflight()
     return {
-        "status": "ok",
+        "status": "ok" if all(c["ok"] for c in checks.values()) else "degraded",
         "model": settings.OPENAI_MODEL,
         "agents": PromptLoader.list_agents(),
+        "checks": checks,
     }
+
+
+async def preflight() -> dict[str, dict]:
+    """Cheap liveness checks for Azure OpenAI and the player cache."""
+    import socket
+    from urllib.parse import urlparse
+
+    results: dict[str, dict] = {}
+
+    endpoint = settings.AZURE_OPENAI_ENDPOINT
+    host = urlparse(endpoint).hostname or ""
+    try:
+        await asyncio.get_running_loop().getaddrinfo(host, 443)
+        results["azure_openai"] = {"ok": True, "detail": f"{host} resolves"}
+    except (socket.gaierror, OSError) as exc:
+        results["azure_openai"] = {
+            "ok": False,
+            "detail": (
+                f"AZURE_OPENAI_ENDPOINT host '{host}' does not resolve ({exc}). "
+                "Every agent, the intent router and all RAG embeddings will fail. "
+                "Point AZURE_OPENAI_ENDPOINT at a live deployment in .env."
+            ),
+        }
+
+    cache_db = settings.ROOT_DIR / "data" / "fbref_cache.db"
+    if not cache_db.exists():
+        results["player_cache"] = {
+            "ok": False,
+            "detail": "data/fbref_cache.db missing — run "
+                      "`python -m backend.data_pipeline.cache_builder`",
+        }
+    else:
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(cache_db))
+            count = conn.execute("SELECT COUNT(*) FROM player_cohort").fetchone()[0]
+            wages = conn.execute("SELECT COUNT(*) FROM player_wages").fetchone()[0]
+            conn.close()
+            results["player_cache"] = {
+                "ok": count > 0,
+                "detail": f"{count} players, {wages} wage rows",
+            }
+        except Exception as exc:
+            results["player_cache"] = {"ok": False, "detail": f"unreadable: {exc}"}
+
+    return results
+
+
+@app.on_event("startup")
+async def log_preflight() -> None:
+    import logging
+
+    log = logging.getLogger("scoutly")
+    for name, result in (await preflight()).items():
+        if result["ok"]:
+            log.info("preflight %s: OK — %s", name, result["detail"])
+        else:
+            log.error("preflight %s: FAILED — %s", name, result["detail"])
 
 
 @app.get("/api/agents")
@@ -131,13 +197,17 @@ async def scout_players(request: Request):
                 run_state = ACTIVE_RUNS[run_id]
                 run_state.ranked_players = result.get("ranked_players", [])
                 run_state.financial_decision = result.get("financial_decision", {})
+                run_state.selection_funnel = result.get("selection_funnel", {})
                 run_state.status = "awaiting_review"
-                
+
                 await queue.put({
                     "type": "draft_ready",
                     "run_id": run_id,
                     "ranked_players": run_state.ranked_players,
-                    "financial_decision": run_state.financial_decision
+                    "financial_decision": run_state.financial_decision,
+                    # Lets the UI explain a thin or empty shortlist instead of
+                    # just showing fewer cards with no reason given.
+                    "selection_funnel": run_state.selection_funnel,
                 })
                 await queue.put({
                     "type": "awaiting_review",
@@ -318,6 +388,7 @@ OUTPUT JSON SCHEMA:
                             ranked_players=selected_players,
                             financial_decision=run_state.financial_decision,
                             langsmith_trace_url=trace_url,
+                            selection_funnel=run_state.selection_funnel,
                         )
 
                     result = await traceable_pipeline(
@@ -386,13 +457,15 @@ OUTPUT JSON SCHEMA:
                 
                 run_state.ranked_players = result.get("ranked_players", [])
                 run_state.financial_decision = result.get("financial_decision", run_state.financial_decision)
+                run_state.selection_funnel = result.get("selection_funnel", {})
                 run_state.status = "awaiting_review"
-                
+
                 await queue.put({
                     "type": "revision_ready",
                     "run_id": run_id,
                     "ranked_players": run_state.ranked_players,
-                    "financial_decision": run_state.financial_decision
+                    "financial_decision": run_state.financial_decision,
+                    "selection_funnel": run_state.selection_funnel,
                 })
                 await queue.put({
                     "type": "awaiting_review",
@@ -437,19 +510,29 @@ async def get_scout_state(run_id: str):
 
 @app.get("/api/download/{run_id}")
 async def download_pdf(run_id: str):
-    """Download the generated PDF scouting report for a given run ID."""
+    """
+    Download the generated scouting report for a given run ID.
+
+    WeasyPrint needs native GTK libraries that are not present on a stock Windows
+    install, so the generator falls back to writing .html. Serve whichever the
+    generator actually produced — checking only for .pdf 404s every Windows run.
+    """
     # Sanitize run_id
     if not all(c in "0123456789abcdef-" for c in run_id):
         raise HTTPException(status_code=400, detail="Invalid run ID.")
 
-    pdf_path = settings.REPORTS_DIR / f"{run_id}.pdf"
-    if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="Report not found. The pipeline may still be running.")
+    for suffix, media_type in ((".pdf", "application/pdf"), (".html", "text/html")):
+        report_path = settings.REPORTS_DIR / f"{run_id}{suffix}"
+        if report_path.exists():
+            return FileResponse(
+                path=str(report_path),
+                media_type=media_type,
+                filename=f"scouting_report_{run_id[:8]}{suffix}",
+            )
 
-    return FileResponse(
-        path=str(pdf_path),
-        media_type="application/pdf",
-        filename=f"scouting_report_{run_id[:8]}.pdf",
+    raise HTTPException(
+        status_code=404,
+        detail="Report not found. The pipeline may still be running.",
     )
 
 

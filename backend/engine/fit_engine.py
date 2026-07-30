@@ -20,20 +20,23 @@ TIER_FACTORS: dict[str, float] = {
     "qualitative":    0.0,
 }
 
-# ── FBref broad position → club profile position key ─────────────────────────
+# ── FBref broad position → club profile position keys, in preference order ───
+# FBref's Big-5 tables only give broad codes, so "DF" covers both centre-backs
+# and fullbacks. Listing both means a club profile that defines only one of them
+# still resolves instead of abstaining for want of a position key.
 _FBREF_TO_CLUB_POS = {
-    "GK":  "goalkeeper",
-    "DF":  "centre_back",   # simplified; fullback is also DF
-    "MF":  "midfielder",
-    "FW":  "striker",       # simplified; winger is also FW
-    # Fine-grained fallbacks
-    "CB":  "centre_back",
-    "FB":  "fullback",
-    "CM":  "midfielder",
-    "DM":  "midfielder",
-    "AM":  "midfielder",
-    "W":   "winger",
-    "ST":  "striker",
+    "GK":  ["goalkeeper"],
+    "DF":  ["centre_back", "fullback"],
+    "MF":  ["midfielder"],
+    "FW":  ["striker", "winger"],
+    # Fine-grained codes, when a caller has them
+    "CB":  ["centre_back"],
+    "FB":  ["fullback"],
+    "CM":  ["midfielder"],
+    "DM":  ["midfielder"],
+    "AM":  ["midfielder"],
+    "W":   ["winger"],
+    "ST":  ["striker"],
 }
 
 
@@ -43,12 +46,12 @@ def _map_position(fbref_pos: str) -> list[str]:
     position keys to try.  Returns candidates in preference order.
     """
     tokens = [t.strip() for t in fbref_pos.replace(",", " ").upper().split()]
-    seen: dict[str, int] = {}
+    ordered: list[str] = []
     for t in tokens:
-        key = _FBREF_TO_CLUB_POS.get(t)
-        if key and key not in seen:
-            seen[key] = len(seen)
-    return list(seen.keys()) or ["midfielder"]
+        for key in _FBREF_TO_CLUB_POS.get(t, []):
+            if key not in ordered:
+                ordered.append(key)
+    return ordered or ["midfielder"]
 
 
 # ── Core computation ──────────────────────────────────────────────────────────
@@ -107,6 +110,11 @@ def compute_fit_verdict(
     qualitative_gaps    = []
     weighted_score_sum  = 0.0
     max_possible        = 0.0
+    # Denominator over EVERY required trait, measured or not. Without it a player
+    # whose only scorable trait happens to be elite normalises to ~100 while a
+    # fully-measured, genuinely better player scores lower — missing data would
+    # raise the score.
+    required_weight     = 0.0
 
     for trait_entry in required_traits:
         if isinstance(trait_entry, dict):
@@ -116,6 +124,7 @@ def compute_fit_verdict(
             trait_name = str(trait_entry)
             weight     = 1.0
 
+        required_weight += weight
         ts = trait_scores.get(trait_name)
 
         if ts is None:
@@ -157,6 +166,7 @@ def compute_fit_verdict(
     if not required_traits:
         return {
             "measurable_fit":      0.0,
+            "demonstrated_fit":    0.0,
             "trait_coverage":      0.0,
             "used_position_key":   None,
             "per_trait_breakdown": [],
@@ -166,8 +176,15 @@ def compute_fit_verdict(
             "abstain_reason":      "No ideal_player_traits defined in club profile for this position",
         }
 
-    # Normalise to 0-100
+    # Two different questions, kept separate on purpose:
+    #   measurable_fit  — how good is the player on the traits we could measure?
+    #   demonstrated_fit — how much of the club's full requirement did they
+    #                      demonstrably meet? Unmeasured traits contribute 0.
+    # Ranking must use demonstrated_fit; measurable_fit alone rewards thin data.
     measurable_fit = round(weighted_score_sum / max_possible * 100, 1) if max_possible > 0 else 0.0
+    demonstrated_fit = (
+        round(weighted_score_sum / required_weight * 100, 1) if required_weight > 0 else 0.0
+    )
 
     # Trait coverage: fraction of required traits that we could score deterministically
     n_required   = len(required_traits)
@@ -176,11 +193,17 @@ def compute_fit_verdict(
 
     # Confidence: penalise thin coverage (by minutes and by trait_coverage)
     minutes_conf = min(minutes / 1800, 1.0)          # full confidence at 1800 min
-    coverage_conf = min(trait_coverage / 0.5, 1.0)   # full if ≥ 50 % traits measurable
     club_conf    = float(
         club_profile.get("data_quality", {}).get("confidence_overall", 0.7)
     )
-    confidence = round(minutes_conf * 0.5 + coverage_conf * 0.3 + club_conf * 0.2, 3)
+    # Coverage is a multiplier, not one weighted term among three. Weighted in,
+    # minutes played alone put a floor of ~0.65 under confidence, so a verdict
+    # resting on 2 of 5 traits still reported "high confidence". Nothing about
+    # playing time or a well-documented club profile can substitute for having
+    # measured what the club actually asked for.
+    confidence = round(
+        (minutes_conf * 0.6 + club_conf * 0.4) * max(trait_coverage, 0.05), 3
+    )
 
     # Abstain if evidence is too thin
     abstain        = confidence < 0.3 or (minutes > 0 and minutes < 270)
@@ -192,6 +215,7 @@ def compute_fit_verdict(
 
     return {
         "measurable_fit":      measurable_fit,
+        "demonstrated_fit":    demonstrated_fit,
         "trait_coverage":      round(trait_coverage, 3),
         "used_position_key":   used_pos_key,
         "per_trait_breakdown": per_trait_breakdown,
