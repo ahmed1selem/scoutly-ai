@@ -465,6 +465,18 @@ function renderFunnelHtml(fn, club) {
       (fn.lowest_excluded_wage_eur ? ` (lowest excluded: €${Number(fn.lowest_excluded_wage_eur).toLocaleString()}/wk)` : ''));
   }
   if (fn.over_wage_on_confirmation) bits.push(`${fn.over_wage_on_confirmation} dropped once a confirmed wage exceeded the ceiling`);
+
+  // A failed selection call empties the shortlist without any of the filters
+  // above accounting for it. Saying so beats blaming the budget.
+  if (fn.selection_failed) {
+    return `<div class="funnel-note">
+      <b>The shortlist is empty because candidate selection failed${fn.selection_error ? ` (${escapeHtml(fn.selection_error)})` : ''}.</b>
+      ${fn.cohort} players were in the cohort and the budget filters were applied,
+      but the selection step did not return. This is a run failure, not a verdict
+      on the brief — try again.
+    </div>`;
+  }
+
   if (!bits.length) return '';
   const n = fn.shortlisted ?? 0;
   return `<div class="funnel-note">

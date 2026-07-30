@@ -547,6 +547,13 @@ class ScouterAgent(BaseAgent):
         except Exception as exc:
             await self.emit_error("LLM selection failed", str(exc))
             selected = []
+            # Without this the funnel reports an empty shortlist with the
+            # budget exclusions as the only visible cause, and a rate-limited
+            # run reads exactly like a brief nobody could satisfy. Rayo
+            # Vallecano's benchmark run lost 25 affordable goalkeepers here and
+            # the report said only that 6 were over the fee ceiling.
+            funnel["selection_failed"] = True
+            funnel["selection_error"] = type(exc).__name__
 
         # Rehydrate from the cohort so stats are the cache's, not the model's.
         # The LLM only chooses names and writes the note; it cannot invent a

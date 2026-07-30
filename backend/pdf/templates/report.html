@@ -353,7 +353,15 @@
    They differ once a reviewer picks a subset, and saying "only 1 met the brief
    ... leaving 3" in one sentence reads as a contradiction. #}
 {% set shortlisted = fn.get('shortlisted', n) %}
-{% if fn.get('cohort') and (shortlisted < 3 or n < shortlisted) %}
+{% if fn.get('selection_failed') %}
+  <div class="notice">
+    <b>The shortlist is empty because candidate selection failed{% if fn.get('selection_error') %}
+    ({{ fn.selection_error }}){% endif %}.</b>
+    {{ fn.cohort }} players were in the cohort and the budget filters were
+    applied, but the selection step did not return. This is a run failure, not a
+    verdict on the brief.
+  </div>
+{% elif fn.get('cohort') and (shortlisted < 3 or n < shortlisted) %}
   <div class="notice">
     <b>{{ shortlisted }} candidate{{ 's' if shortlisted != 1 else '' }} met this brief{% if n < shortlisted %}; this report covers the {{ n }} carried forward for review{% endif %}.</b>
     Of {{ fn.cohort }} players considered at this position:
