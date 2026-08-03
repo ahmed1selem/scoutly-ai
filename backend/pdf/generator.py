@@ -75,37 +75,57 @@ def _html_to_pdf_via_chromium(html: str, pdf_path: Path) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     proc = None
 
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "report.html"
-        src.write_text(html, encoding="utf-8")
-        try:
-            proc = subprocess.run(
-                [
-                    browser,
-                    "--headless=new",
-                    "--disable-gpu",
-                    "--no-sandbox",
-                    "--no-pdf-header-footer",
-                    "--run-all-compositor-stages-before-draw",
-                    "--virtual-time-budget=10000",
-                    f"--print-to-pdf={target}",
-                    src.resolve().as_uri(),
-                ],
-                capture_output=True,
-                timeout=180,
-            )
-        except Exception as exc:
-            logging.getLogger(__name__).warning("Chromium print-to-pdf failed: %s", exc)
-            return False
+    # Two attempts. A benchmark run lost its PDF to a print job that hung until
+    # the timeout and then had nothing to fall back on, while the identical HTML
+    # rendered in under two seconds on the next try. The cause was never
+    # reproducible, so the fix is to survive it rather than to explain it.
+    attempts = 2
+    for attempt in range(attempts):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "report.html"
+            src.write_text(html, encoding="utf-8")
+            try:
+                proc = subprocess.run(
+                    [
+                        browser,
+                        "--headless=new",
+                        "--disable-gpu",
+                        "--no-sandbox",
+                        "--no-pdf-header-footer",
+                        "--run-all-compositor-stages-before-draw",
+                        "--virtual-time-budget=10000",
+                        # Print against a throwaway profile. Sharing the default
+                        # one means competing for its lock with whatever Chrome
+                        # the user (or the scraper) already has open.
+                        f"--user-data-dir={Path(tmp) / 'profile'}",
+                        f"--print-to-pdf={target}",
+                        src.resolve().as_uri(),
+                    ],
+                    capture_output=True,
+                    # A report that has not printed in 60s is stuck, not slow —
+                    # the real ones take about two. The old 180s ceiling meant a
+                    # single hang cost three minutes and still produced nothing.
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                logging.getLogger(__name__).warning(
+                    "Chromium print-to-pdf timed out (attempt %d/%d)",
+                    attempt + 1, attempts,
+                )
+                continue
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Chromium print-to-pdf failed: %s", exc)
+                return False
 
-    # Chrome signals success by writing the file; its exit code is unreliable.
-    if target.exists() and target.stat().st_size > 1024:
-        return True
-    logging.getLogger(__name__).warning(
-        "Chromium print-to-pdf produced no usable file (exit %s): %s",
-        getattr(proc, "returncode", "?"),
-        (proc.stderr.decode("utf-8", "replace")[:300] if proc and proc.stderr else ""),
-    )
+        # Chrome signals success by writing the file; its exit code is unreliable.
+        if target.exists() and target.stat().st_size > 1024:
+            return True
+        logging.getLogger(__name__).warning(
+            "Chromium print-to-pdf produced no usable file (attempt %d/%d, exit %s): %s",
+            attempt + 1, attempts,
+            getattr(proc, "returncode", "?"),
+            (proc.stderr.decode("utf-8", "replace")[:300] if proc and proc.stderr else ""),
+        )
     return False
 
 
