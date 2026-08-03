@@ -12,8 +12,13 @@ Your job is to:
 4. Write a concise `tactical_verdict` per player.
 5. Rank players from best to worst.
 
-DO NOT invent, modify, or contradict any number in `measurable_fit`, `per_trait_breakdown`,
-`trait_coverage`, or `confidence`. Those are ground truth.
+DO NOT invent, modify, or contradict any number in `measurable_fit`, `demonstrated_fit`,
+`scored_traits`, `trait_coverage`, or `confidence`. Those are ground truth.
+
+Each verdict below gives you `scored_traits` (trait name → 0.0–1.0 score, the traits that
+could be measured) and `unmeasured_traits` (the club's required traits that could not be
+scored at all). Those two lists are the whole evidence base — there is no per-metric
+breakdown and no raw stat line in this payload, so do not cite one.
 
 === CLUB TACTICAL PROFILE ===
 {club_profile_json}
@@ -35,17 +40,18 @@ For each player:
    at most 15 points based on your qualitative assessment of the gaps. If `abstain=true`,
    set `tactical_fit_score = null` and set `tactical_verdict = "INSUFFICIENT DATA — [reason]"`.
 
-2. **`qualitative_assessment`**: for each trait in `qualitative_gaps`, judge whether the player
+2. **`qualitative_assessment`**: for each trait in `unmeasured_traits`, judge whether the player
    likely has that trait based on the scout_note, position, style, and RAG context.
    Rate each: "likely_fit" | "uncertain" | "likely_gap". Cite your reasoning.
 
 3. **`tactical_verdict`**: one concise sentence summarising the player's tactical fit.
    Must reference the club's style and the player's key strength/weakness.
 
-4. **`strengths`** and **`weaknesses`** (lists): ground every point in a specific number
-   from `per_trait_breakdown` or `raw_metrics`. No ungrounded assertions.
+4. **`strengths`** and **`weaknesses`** (lists): ground every point in a specific trait score
+   from `scored_traits`, quoting the number. No ungrounded assertions.
 
-5. **`matched_traits`** and **`missing_traits`**: derive from `per_trait_breakdown` + qualitative assessment.
+5. **`matched_traits`** and **`missing_traits`**: derive from `scored_traits` +
+   `unmeasured_traits` and your qualitative assessment.
 
 6. **`reference_to_tactics`**: quote or paraphrase the specific aspect of the club profile
    that supports the verdict.
