@@ -78,3 +78,53 @@ def test_reapplied_ceiling_treats_a_missing_wage_as_affordable():
     """A player with no wage figure is not evidence of being over budget."""
     players = [{"name": "Unpriced"}]
     assert len(_reapply_wage_ceiling(players, 120_000)) == 1
+
+
+# ── a mid-season transfer must not occupy two slate slots ─────────────────────
+
+def _dedupe_split_seasons(cohort):
+    """Mirror of the scouter's split-season merge, for testing."""
+    by_person = {}
+    for p in cohort:
+        key = (p.get("name") or "").strip().casefold()
+        kept = by_person.get(key)
+        if kept is None or int(p.get("minutes", 0) or 0) > int(kept.get("minutes", 0) or 0):
+            by_person[key] = p
+    return list(by_person.values())
+
+
+def test_split_season_rows_collapse_to_the_fuller_one():
+    """
+    A player who changed club mid-season has one cached row per squad. Brice
+    Samba appeared twice on Barcelona's goalkeeper slate, at two different fit
+    scores, competing with himself for a place.
+    """
+    cohort = [
+        {"name": "Brice Samba", "squad": "Lens", "minutes": 1200},
+        {"name": "Brice Samba", "squad": "Rennes", "minutes": 1800},
+        {"name": "Someone Else", "squad": "Lille", "minutes": 900},
+    ]
+    kept = _dedupe_split_seasons(cohort)
+    assert len(kept) == 2
+    samba = next(p for p in kept if p["name"] == "Brice Samba")
+    assert samba["squad"] == "Rennes", "should keep the row with more minutes"
+
+
+def test_dedupe_is_case_insensitive_and_keeps_distinct_players():
+    cohort = [
+        {"name": "Joan García", "squad": "Espanyol", "minutes": 3420},
+        {"name": "joan garcía", "squad": "Espanyol", "minutes": 90},
+        {"name": "Joan Jordán", "squad": "Sevilla", "minutes": 1500},
+    ]
+    kept = _dedupe_split_seasons(cohort)
+    assert len(kept) == 2
+    assert max(p["minutes"] for p in kept if "garc" in p["name"].casefold()) == 3420
+
+
+def test_dedupe_tolerates_missing_minutes():
+    cohort = [
+        {"name": "A", "squad": "X"},
+        {"name": "A", "squad": "Y", "minutes": 500},
+    ]
+    kept = _dedupe_split_seasons(cohort)
+    assert len(kept) == 1 and kept[0]["squad"] == "Y"

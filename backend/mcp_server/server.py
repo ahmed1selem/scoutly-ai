@@ -889,17 +889,26 @@ async def get_position_cohort(
         season:      Season code, e.g. "2425" for 2024-25 (default).
         league:      Optional league filter, e.g. "Premier League" or "La Liga".
                      Leave empty to search the full Big 5.
-        limit:       Maximum players to return (default 40, hard cap 500). A
+        limit:       Maximum players to return (default 40, hard cap 1200). A
                      caller that forwards the result straight to an LLM should
                      keep this small; the scouter ranks locally first and only
-                     sends the top of the list, so it asks for far more.
+                     sends the top of the list, so it asks for the whole cohort.
+                     Note the trim below is by MINUTES, so any limit short of the
+                     eligible count decides who is *visible* on durability rather
+                     than on fit — pass a limit above the cohort size unless you
+                     specifically want the most-used players.
         min_minutes: Drop players below this many minutes played (default 450).
         max_age:     Inclusive upper age bound. "Under 27" is max_age=26.
         min_age:     Inclusive lower age bound.
     """
     import pandas as pd
 
-    limit = max(1, min(int(limit), 500))
+    # 1200 clears the largest position cohort (890 midfielders with 450+ minutes
+    # in 2024-25) with room to spare. The old 500 silently truncated MF and DF,
+    # and because the trim below is by minutes, what it cut was the low-minutes
+    # tail — which is where rotation players and smaller-club starters live, the
+    # exact profile a recruiter is shopping for.
+    limit = max(1, min(int(limit), 1200))
     min_minutes = max(0, int(min_minutes))
 
     def _within_age(player: dict) -> bool:

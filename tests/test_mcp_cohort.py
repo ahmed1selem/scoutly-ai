@@ -247,6 +247,41 @@ def test_cohort_limit_is_capped(mock_scrape):
     assert len(json.loads(result)) == 25
 
 
+def _uniform_cohort(n):
+    """n players all comfortably above any minutes floor, so only the cap bites."""
+    rows = {"Player": [f"P{i}" for i in range(n)]}
+    rows.update({
+        "Pos": ["MF"]*n, "Squad": [f"S{i%20}" for i in range(n)], "Comp": ["PL"]*n,
+        "Age": ["25-100"]*n, "Min": [900 + (i % 500) for i in range(n)],
+        "Gls": [10]*n, "Ast": [5]*n, "xG": [9.0]*n, "xAG": [4.0]*n,
+        "Sh": [50]*n, "SoT": [25]*n, "PrgP": [100]*n, "PrgC": [70]*n,
+    })
+    return pd.DataFrame(rows)
+
+
+@patch("server._scrape")
+def test_cap_clears_the_largest_real_position_cohort(mock_scrape):
+    """
+    The cap has to exceed every real cohort, because the trim is by MINUTES: any
+    cap below the eligible count decides who the scouter's fit ranking is even
+    allowed to see, on playing time. At 500 the scouter saw 45% of Big-5
+    defenders and 34% of midfielders (890 eligible), and Valentin Rongier — the
+    5th-best fit of 868 for Rennes, whom Rennes actually signed — was never in
+    the cohort at all because he played 1,562 minutes.
+    """
+    mock_scrape.side_effect = [{"player": _uniform_cohort(890)}, Exception("skip")]
+    result = asyncio.run(get_position_cohort("MF", "2425", limit=1200))
+    assert len(json.loads(result)) == 890, "the full cohort must survive the cap"
+
+
+@patch("server._scrape")
+def test_cap_still_bounds_an_absurd_request(mock_scrape):
+    """The cap is raised, not removed — it still refuses an unbounded pull."""
+    mock_scrape.side_effect = [{"player": _uniform_cohort(1400)}, Exception("skip")]
+    result = asyncio.run(get_position_cohort("MF", "2425", limit=99_999))
+    assert len(json.loads(result)) == 1200
+
+
 @patch("server._scrape")
 def test_cohort_min_minutes_filter(mock_scrape):
     mock_scrape.side_effect = [{"player": _big_cohort(25)}, Exception("skip")]

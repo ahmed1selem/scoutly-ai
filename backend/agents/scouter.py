@@ -10,6 +10,7 @@ from mcp.client.sse import sse_client
 
 from .base import BaseAgent
 from ..engine.fit_engine import compute_fit_verdict
+from .financial import effective_fee_eur
 from ..utils.config import settings
 from ..utils.prompt_loader import PromptLoader
 
@@ -133,7 +134,13 @@ class ScouterAgent(BaseAgent):
 
     async def _call_mcp_tool(self, tool_name: str, params: dict) -> Any:
         """Connect to the MCP server and call a single tool."""
-        mcp_url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8005/sse")
+        # Derive the URL from the same MCP_SERVER_HOST/PORT the server binds to,
+        # so one setting moves both ends. Hardcoding a default of 8005 here while
+        # the server read MCP_SERVER_PORT meant any deployment that changed the
+        # port broke silently: fly.toml sets 8001, the server listened on 8001,
+        # and the scouter went on dialling 8005. Every tool call failed and the
+        # only symptom was an empty shortlist on every run.
+        mcp_url = os.getenv("MCP_SERVER_URL") or settings.MCP_SERVER_URL
         result_data: Any = None
 
         try:
@@ -211,7 +218,18 @@ class ScouterAgent(BaseAgent):
         # to Real Madrid, Cherki to Manchester City — and a league gate made
         # every one of them unreachable. Huijsen scores in the 96th percentile
         # of the Big-5 centre-back cohort for Real Madrid.
-        COHORT_LIMIT = 300
+        # Large enough to cover every position's full eligible set (890 MF is the
+        # biggest). It must be, because get_position_cohort trims by MINUTES, so
+        # any smaller number picks who the fit ranking below is even allowed to
+        # consider on the basis of playing time — the one ordering measured to
+        # have no predictive power at all (rho +0.016 against 2025-26 rating).
+        #
+        # At 300 the scouter saw 34% of midfielders and 45% of defenders. Valentin
+        # Rongier, the third-best fit of 878 midfielders for Rennes and a player
+        # Rennes actually signed, played 1,562 minutes and so was never in the
+        # cohort to be ranked. Ranking the full set is local, deterministic and
+        # costs about half a second; the model still only ever sees SELECTION_LIMIT.
+        COHORT_LIMIT = 1200
         #: Candidates worth paying for a valuation lookup, taken by fit.
         VALUATION_LIMIT = 30
         SELECTION_LIMIT = 20
@@ -366,6 +384,29 @@ class ScouterAgent(BaseAgent):
 
         await self.emit_progress(f"Got {len(cohort)} players from the cache")
 
+        # A player who changed club mid-season has one cached row per squad, so
+        # the same person competes with themselves for a slate slot — Barcelona's
+        # goalkeeper slate carried Brice Samba twice, at two different fit scores.
+        # Keep the row with the most minutes.
+        #
+        # This stops the duplicate reaching a shortlist; it does NOT reunite the
+        # split season. Nicolò Fagioli's 2024-25 sits in two rows (Juventus 571 +
+        # Fiorentina 962) and the surviving row still under-reports him, which
+        # needs the cache builder to aggregate across squads before per-90s and
+        # percentiles are derived.
+        by_person: dict[str, dict] = {}
+        for p in cohort:
+            key = (p.get("name") or "").strip().casefold()
+            kept = by_person.get(key)
+            if kept is None or int(p.get("minutes", 0) or 0) > int(kept.get("minutes", 0) or 0):
+                by_person[key] = p
+        if len(by_person) < len(cohort):
+            await self.emit_progress(
+                f"Merged {len(cohort) - len(by_person)} duplicate row(s) from "
+                "mid-season transfers, keeping the fuller season for each player"
+            )
+            cohort = list(by_person.values())
+
         # A thin shortlist is a legitimate answer to a tight brief, but only if
         # the reader can see which constraint did the cutting. Brentford asked for
         # a EUR 15M centre-back on EUR 60k/wk and got exactly one candidate, with
@@ -493,27 +534,42 @@ class ScouterAgent(BaseAgent):
         # €220M striker to a club with a €40M ceiling is not a useful option to
         # weigh, it is noise — so the model is never shown one. This costs one
         # Transfermarkt lookup per candidate on a cold cache and nothing after.
+        #
+        # The figure compared against the ceiling is the contract-aware fee, not
+        # the raw valuation. Gating on the valuation threw away the deals clubs
+        # most want: Jonathan Tah's €28M valuation put him over a €25M ceiling in
+        # the same window he joined Bayern for nothing.
         if value_max:
             await self.emit_progress(
                 f"Valuing {len(slate)} candidates against the €{value_max:,.0f} fee ceiling..."
             )
             for p in slate:
                 await _resolve_market_value(p)
+                fee, basis = effective_fee_eur(
+                    p.get("value_eur"), p.get("contract_expires")
+                )
+                p["effective_fee_eur"] = fee
+                p["fee_basis"] = basis
 
             affordable_fee = [
                 p for p in slate
-                if not p.get("value_eur") or p["value_eur"] <= value_max
+                if p.get("effective_fee_eur") is None
+                or p["effective_fee_eur"] <= value_max
             ]
             priced_out = [p for p in slate if p not in affordable_fee]
             if priced_out:
                 funnel["over_fee_ceiling"] = len(priced_out)
                 funnel["cheapest_excluded_fee_eur"] = min(
-                    (p["value_eur"] for p in priced_out), default=None
+                    (p["effective_fee_eur"] for p in priced_out), default=None
                 )
+                # Report the effective fee, since that is what the ceiling was
+                # applied to; showing the raw valuation makes the arithmetic in
+                # the funnel look wrong for anyone on a running-down contract.
                 await self.emit_progress(
                     f"Excluded {len(priced_out)} candidate(s) above the fee ceiling: "
                     + ", ".join(
-                        f"{p['name']} (€{p['value_eur'] / 1e6:.0f}M)" for p in priced_out
+                        f"{p['name']} (€{p['effective_fee_eur'] / 1e6:.0f}M)"
+                        for p in priced_out
                     )
                 )
             slate = affordable_fee
@@ -723,12 +779,19 @@ class ScouterAgent(BaseAgent):
 
                 # Belt and braces. The pre-selection filter should mean this never
                 # fires; if it ever does, the report must say so rather than
-                # present an unaffordable player as a live option.
-                if p.get("value_eur") and value_max and p["value_eur"] > value_max:
+                # present an unaffordable player as a live option. Recomputed
+                # rather than reused, because this runs after a late valuation
+                # may have filled in for a candidate the gate could not price.
+                fee, basis = effective_fee_eur(
+                    p.get("value_eur"), p.get("contract_expires")
+                )
+                p.setdefault("effective_fee_eur", fee)
+                p.setdefault("fee_basis", basis)
+                if fee is not None and value_max and fee > value_max:
                     p["over_fee_budget"] = True
                     p["fee_budget_note"] = (
-                        f"€{p['value_eur'] / 1e6:.0f}M market value against a "
-                        f"€{value_max / 1e6:.0f}M ceiling"
+                        f"€{fee / 1e6:.0f}M effective fee against a "
+                        f"€{value_max / 1e6:.0f}M ceiling ({basis})"
                     )
                     await self.emit_progress(
                         f"  {name}: OVER FEE BUDGET (should have been filtered) — "

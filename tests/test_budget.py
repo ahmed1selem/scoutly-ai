@@ -204,3 +204,91 @@ def test_empty_shortlist_does_not_raise():
 ])
 def test_contract_date_parsing(raw, expected_none):
     assert (_years_until(raw) is None) is expected_none
+
+
+# ── contract-aware fee ────────────────────────────────────────────────────────
+# A Transfermarkt valuation is what a player is worth, not what a club will
+# accept. Gating on the raw figure hid exactly the deals clubs do: Jonathan Tah
+# was valued at EUR 28M and joined Bayern for nothing when his contract expired,
+# and Barcelona paid Joan Garcia's EUR 25M release clause against a EUR 45M
+# valuation.
+
+from datetime import datetime, timedelta
+
+from backend.agents.financial import (
+    effective_fee_eur, assess_deal_economics, _FEE_DISCOUNT_HORIZON_YEARS,
+)
+
+
+def _expiry_in(years: float) -> str:
+    return (datetime.now() + timedelta(days=int(years * 365.25))).strftime("%d/%m/%Y")
+
+
+def test_expired_contract_costs_nothing():
+    fee, note = effective_fee_eur(28_000_000, _expiry_in(-0.1))
+    assert fee == 0
+    assert "free transfer" in note
+
+
+def test_long_contract_pays_the_full_valuation():
+    fee, _ = effective_fee_eur(28_000_000, _expiry_in(4))
+    assert fee == 28_000_000
+
+
+def test_fee_decays_toward_expiry():
+    far = effective_fee_eur(30_000_000, _expiry_in(2.5))[0]
+    near = effective_fee_eur(30_000_000, _expiry_in(0.5))[0]
+    assert 0 < near < far < 30_000_000
+
+
+def test_one_year_left_is_a_third_of_the_horizon():
+    fee, _ = effective_fee_eur(30_000_000, _expiry_in(1))
+    expected = 30_000_000 / _FEE_DISCOUNT_HORIZON_YEARS
+    assert abs(fee - expected) / expected < 0.02
+
+
+def test_unknown_expiry_is_not_treated_as_a_bargain():
+    """An unknown contract is not evidence of a cheap one."""
+    fee, note = effective_fee_eur(28_000_000, None)
+    assert fee == 28_000_000
+    assert "unknown" in note
+
+
+def test_no_valuation_returns_none():
+    assert effective_fee_eur(None, _expiry_in(1))[0] is None
+    assert effective_fee_eur(0, _expiry_in(1))[0] is None
+
+
+def test_a_free_agent_is_within_any_fee_budget():
+    """
+    fee == 0 and fee is None are different states. Testing truthiness reported
+    the cheapest possible signing as impossible to cost.
+    """
+    players = [{"name": "Tah", "value_eur": 28_000_000,
+                "contract_expires": _expiry_in(-0.1), "wage_eur": 150_000}]
+    assess_deal_economics(players, {"value_max": 25_000_000, "salary_max": 200_000})
+    p = players[0]
+    assert p["fee_eur"] == 0
+    assert p["within_fee_budget"] is True
+    assert p["economic_verdict"] == "Within budget on both fee and wage"
+
+
+def test_costing_agrees_with_the_gate_for_a_running_down_contract():
+    """
+    The scouter filters on the discounted fee, so costing the raw valuation
+    reported a candidate as over budget immediately after admitting them.
+    """
+    players = [{"name": "Nearly out", "value_eur": 45_000_000,
+                "contract_expires": _expiry_in(1), "wage_eur": 80_000}]
+    summary = assess_deal_economics(players, {"value_max": 20_000_000,
+                                              "salary_max": 100_000})
+    assert players[0]["within_fee_budget"] is True
+    assert summary["candidates_within_budget"] == 1
+    assert players[0]["market_value_eur"] == 45_000_000, "raw valuation still reported"
+
+
+def test_a_player_on_a_long_deal_is_still_gated():
+    players = [{"name": "Expensive", "value_eur": 90_000_000,
+                "contract_expires": _expiry_in(4), "wage_eur": 80_000}]
+    assess_deal_economics(players, {"value_max": 20_000_000, "salary_max": 100_000})
+    assert players[0]["within_fee_budget"] is False

@@ -97,6 +97,64 @@ def _years_until(date_str: str | None) -> float | None:
     return None
 
 
+#: Years of contract remaining at which a valuation is paid in full. Inside this
+#: window the selling club's leverage decays: their residual book value falls
+#: toward zero at expiry, and from twelve months out the player can negotiate a
+#: pre-contract elsewhere. Three years is the horizon over which that decay is
+#: modelled linearly, mirroring the straight-line amortisation used below.
+_FEE_DISCOUNT_HORIZON_YEARS = 3.0
+
+
+def effective_fee_eur(
+    market_value_eur: float | int | None,
+    contract_expires: str | None,
+) -> tuple[int | None, str]:
+    """
+    What it would plausibly cost to sign this player, and why.
+
+    A Transfermarkt valuation is what a player is worth, not what a club will
+    accept, and the gap is widest exactly where recruitment is most efficient.
+    Jonathan Tah was valued at EUR 28M and joined Bayern for nothing because his
+    contract ran out; Joan García was valued at EUR 45M and cost Barcelona the
+    EUR 25M written into his release clause. Gating on the raw valuation hides
+    that entire category of deal.
+
+    Returns (effective_fee, note). The fee is the valuation scaled by the share
+    of `_FEE_DISCOUNT_HORIZON_YEARS` still left on the contract, floored at zero
+    for a player already out of contract. With no expiry date known, the
+    valuation is returned unchanged — an unknown contract is not evidence of a
+    cheap one.
+    """
+    if not market_value_eur or market_value_eur <= 0:
+        return None, "no published valuation"
+
+    value = int(market_value_eur)
+    years_left = _years_until(contract_expires)
+    if years_left is None:
+        return value, (
+            "Transfermarkt market value — a valuation, not a quoted asking price; "
+            "contract expiry unknown, so no discount applied"
+        )
+
+    if years_left <= 0:
+        return 0, (
+            "out of contract — available on a free transfer, so the "
+            f"EUR {value / 1e6:.0f}M valuation is not a fee"
+        )
+
+    factor = min(years_left / _FEE_DISCOUNT_HORIZON_YEARS, 1.0)
+    fee = int(round(value * factor))
+    if factor >= 1.0:
+        return value, (
+            "Transfermarkt market value — a valuation, not a quoted asking price; "
+            f"{years_left:.1f} years left, so no discount"
+        )
+    return fee, (
+        f"EUR {value / 1e6:.1f}M valuation discounted to EUR {fee / 1e6:.1f}M — "
+        f"{years_left:.1f} years left on the contract"
+    )
+
+
 def assess_deal_economics(players: list[dict], budget: dict) -> dict:
     """
     Cost each candidate against the budget, deterministically.
@@ -117,7 +175,12 @@ def assess_deal_economics(players: list[dict], budget: dict) -> dict:
     assessed = 0
 
     for p in players:
-        fee = p.get("value_eur")
+        # The costed fee is the contract-aware one, so that this agrees with the
+        # ceiling the scouter filtered on. Costing the raw valuation while the
+        # gate used the discounted figure reported a candidate as over budget
+        # immediately after admitting them.
+        market_value = p.get("value_eur")
+        fee, fee_basis = effective_fee_eur(market_value, p.get("contract_expires"))
         wage = p.get("wage_eur")
         wage_annual = int(wage * 52) if wage else None
 
@@ -126,10 +189,8 @@ def assess_deal_economics(players: list[dict], budget: dict) -> dict:
         amortised = int(fee / deal_years) if fee else None
 
         p["fee_eur"] = fee
-        p["fee_basis"] = (
-            "Transfermarkt market value — a valuation, not a quoted asking price"
-            if fee else "no published valuation"
-        )
+        p["market_value_eur"] = market_value
+        p["fee_basis"] = fee_basis
         p["wage_annual_eur"] = wage_annual
         p["contract_years_left"] = round(years_left, 1) if years_left is not None else None
         p["amortised_fee_annual_eur"] = amortised
@@ -141,7 +202,10 @@ def assess_deal_economics(players: list[dict], budget: dict) -> dict:
             (amortised or 0) + (wage_annual or 0) if (amortised or wage_annual) else None
         )
 
-        within_fee = None if not (fee and fee_cap) else fee <= fee_cap
+        # `fee is None` means no valuation at all; `fee == 0` means a free agent,
+        # who is affordable under any ceiling. Testing truthiness conflates the
+        # two and reported the cheapest possible signing as impossible to cost.
+        within_fee = None if (fee is None or not fee_cap) else fee <= fee_cap
         within_wage = None if not (wage and wage_cap) else wage <= wage_cap
         p["within_fee_budget"] = within_fee
         p["within_wage_budget"] = within_wage
@@ -162,10 +226,10 @@ def assess_deal_economics(players: list[dict], budget: dict) -> dict:
             verdict = "Cannot be costed — missing fee or wage data"
         p["economic_verdict"] = verdict
 
-        if fee or wage:
+        if fee is not None or wage:
             assessed += 1
 
-    priced = [p for p in players if p.get("fee_eur")]
+    priced = [p for p in players if p.get("fee_eur") is not None]
     affordable = [p for p in players
                   if p.get("within_fee_budget") and p.get("within_wage_budget")]
     return {
@@ -175,13 +239,16 @@ def assess_deal_economics(players: list[dict], budget: dict) -> dict:
         "candidates_with_a_valuation": len(priced),
         "candidates_within_budget": len(affordable),
         "cheapest_affordable": min(
-            (p for p in affordable if p.get("fee_eur")),
+            (p for p in affordable if p.get("fee_eur") is not None),
             key=lambda p: p["fee_eur"], default={},
         ).get("name"),
         "total_fee_if_all_signed_eur": sum(p["fee_eur"] for p in priced) or None,
         "fee_basis_note": (
-            "Fees are Transfermarkt valuations, not asking prices. Amortisation "
-            f"assumes a {_DEFAULT_DEAL_YEARS}-year contract."
+            "Fees start from the Transfermarkt valuation, which is not an asking "
+            "price, and are then discounted by the contract time remaining over a "
+            f"{_FEE_DISCOUNT_HORIZON_YEARS:.0f}-year horizon — a player out of "
+            "contract is costed at zero. Each candidate's fee_basis states which "
+            f"applied. Amortisation assumes a {_DEFAULT_DEAL_YEARS}-year contract."
         ),
     }
 
