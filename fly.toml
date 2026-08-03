@@ -12,8 +12,14 @@ kill_timeout   = "30s"
 
 [env]
   FBREF_USE_MOCK       = "false"
+  # Serving must never scrape: the container has no Chrome, and a cache miss
+  # that tries to launch one blocks the request until it times out.
+  FBREF_LIVE_SCRAPE    = "false"
   MCP_SERVER_HOST      = "localhost"
   MCP_SERVER_PORT      = "8001"
+  # Stated rather than left to the code default, so the deployed provider is
+  # visible here instead of only in backend/utils/config.py.
+  LLM_PROVIDER         = "groq"
   LANGCHAIN_PROJECT    = "scoutly-ai"
   LANGCHAIN_TRACING_V2 = "true"
 
@@ -39,4 +45,9 @@ kill_timeout   = "30s"
 [[vm]]
   cpu_kind = "shared"
   cpus     = 1
-  memory   = "512mb"
+  # 512mb does not fit this image. One container runs two Python processes, and
+  # the backend alone loads FAISS, pandas and the club vector store before it can
+  # answer a health check — the local process sits above 200MB at rest and peaks
+  # well beyond it while ranking an 890-player cohort. At 512mb the OOM killer
+  # takes the MCP server mid-request, which surfaces as an unexplained 500.
+  memory   = "1gb"
