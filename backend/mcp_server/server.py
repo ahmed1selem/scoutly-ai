@@ -1269,9 +1269,37 @@ async def get_player_market_value(
             "note": f"Lookup failed: {type(exc).__name__}",
         })
 
+    # Prefer the valuation as it stood at the end of the season being scouted.
+    #
+    # The cache pairs 2024-25 performance with whatever Transfermarkt says
+    # today, and the gap is not marginal: Mohamed Salah is EUR 22M now against
+    # EUR 50M then, Thomas Partey EUR 2M against EUR 14M. Of 359 backfilled
+    # players, 311 differ by more than 5%. Ranking a 2024-25 season against a
+    # 2026 price tag prices players on how their *next* season went, which is
+    # information the pipeline is not supposed to have.
+    #
+    # Swapped here rather than at each call site so the fee ceiling, the
+    # contract-aware discount and the wage-from-value model all move together.
+    # The live figure stays available under market_value_current_eur.
+    as_of = result.get("market_value_asof_eur")
+    if as_of:
+        result["market_value_current_eur"] = result.get("market_value_eur")
+        result["market_value_eur"] = as_of
+        result["market_value_updated"] = result.get("market_value_asof_date")
+        result["market_value_basis"] = (
+            f"Transfermarkt valuation as of {result.get('market_value_asof_date')}, "
+            "contemporary with the 2024-25 season being scouted"
+        )
+    else:
+        result["market_value_basis"] = (
+            "Transfermarkt valuation as of today — no dated history available, so "
+            "this is not contemporary with the 2024-25 season being scouted"
+        )
+
     logger.info(
         f"get_player_market_value: {player_name} → "
-        f"{result.get('market_value_eur')} (cache={result.get('from_cache')})"
+        f"{result.get('market_value_eur')} "
+        f"(as_of={bool(as_of)}, cache={result.get('from_cache')})"
     )
     return json.dumps(result, default=str)
 
