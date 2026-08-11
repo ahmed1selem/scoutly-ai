@@ -11,10 +11,12 @@
 # Usage:  .\demo.ps1              full preflight, then serve
 #         .\demo.ps1 -SkipChecks  straight to serving (only if you just ran it)
 #         .\demo.ps1 -NoBrowser   do not open a browser window
+#         .\demo.ps1 -Port 8010   serve on a different port
 
 param(
     [switch]$SkipChecks,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [int]$Port = 8000
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,22 +57,45 @@ if (-not $SkipChecks) {
         exit 1
     }
 
-    # ── Ports ─────────────────────────────────────────────────────────────────
-    # A server left running from an earlier attempt binds the port and the new
-    # one dies on startup, which is a confusing thing to debug on stage.
-    Say ""
-    Say "Ports" "White"
-    foreach ($port in 8000, 8005) {
-        $held = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-        if ($held) {
-            $procId = $held[0].OwningProcess
-            Warn "port $port already held by PID $procId - stopping it"
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+}
+
+# ── Ports ─────────────────────────────────────────────────────────────────────
+# Deliberately outside the -SkipChecks block: it costs nothing and it is the
+# check most likely to be needed on a second attempt, which is exactly when
+# someone reaches for -SkipChecks.
+#
+# A leftover server from an earlier attempt is ours to stop. Anything else is
+# not: on this machine Docker Desktop holds 8000, and Windows let uvicorn bind
+# alongside it rather than refusing. Two listeners on one port means whichever
+# answers first wins, so curl reached the app while the browser got Docker's
+# {"detail":"Not Found"}. An audience would have seen that JSON. Killing Docker
+# to take the port back is not an acceptable fix, so this reports and moves.
+Say ""
+Say "Ports" "White"
+foreach ($p in @($Port, 8005)) {
+    $held = @(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue)
+    if (-not $held) { continue }
+
+    foreach ($conn in $held) {
+        $owner = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+        if (-not $owner) { continue }
+
+        if ($owner.ProcessName -match '^(python|pythonw|uvicorn)$') {
+            Warn "port $p held by our own $($owner.ProcessName) (PID $($owner.Id)) - stopping it"
+            Stop-Process -Id $owner.Id -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
         }
+        else {
+            Fail "port $p is held by $($owner.ProcessName) (PID $($owner.Id)), which is not ours"
+            Say  "         Windows may let the server bind anyway, and then requests" "Yellow"
+            Say  "         land on whichever listener answers first - the demo shows" "Yellow"
+            Say  "         that process's response instead of the app." "Yellow"
+            Say  "         Re-run on a free port:  .\demo.ps1 -Port 8010" "Yellow"
+            exit 1
+        }
     }
-    Ok "8000 and 8005 free"
 }
+Ok "$Port and 8005 free"
 
 # ── 5. Start the MCP server ───────────────────────────────────────────────────
 Say ""
@@ -130,9 +155,10 @@ Say "==================================================================" "Cyan"
 Say ""
 
 if (-not $NoBrowser) {
-    Start-Job -ScriptBlock {
+    Start-Job -ArgumentList $Port -ScriptBlock {
+        param($p)
         Start-Sleep -Seconds 6
-        Start-Process "http://localhost:8000"
+        Start-Process "http://localhost:$p"
     } | Out-Null
 }
 
@@ -141,7 +167,7 @@ if (-not $NoBrowser) {
 # them, so a debate in progress would 404 on the next directive.
 try {
     python -m uvicorn backend.main:app `
-        --host 0.0.0.0 --port 8000 `
+        --host 0.0.0.0 --port $Port `
         --timeout-keep-alive 1200
 } finally {
     Stop-Demo
