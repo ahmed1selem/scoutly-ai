@@ -55,6 +55,11 @@ STAGE_DIR    = ROOT / "data" / "_build_stage"   # per-table scrape checkpoints
 DEFAULT_LEGACY_DB = ROOT / "data" / "fbref_cache.db.bak"
 SEASON_CODE  = "2425"
 SEASON_LABEL = "2024-2025"
+#: Capology labels the same season "2024-25" where FBref wants "2024-2025".
+#: Passing FBref's label was rejected outright — "2024-2025 is not a valid year"
+#: — which is one of the reasons no wage has ever landed in the cache. Derived
+#: from SEASON_CODE so the two cannot drift apart when the season rolls over.
+CAPOLOGY_SEASON = f"20{SEASON_CODE[:2]}-{SEASON_CODE[2:]}"
 MIN_MINUTES  = 450   # matches the default floor in get_position_cohort
 
 # A Big-5 combined table takes 110-140 s. 60 s (the old value) times out on a
@@ -516,16 +521,38 @@ def _scrape_capology_league(league_name: str) -> list[dict]:
     """
     cap = Capology()
     try:
-        df = cap.scrape_salaries(SEASON_LABEL, league_name, "eur")
+        df = cap.scrape_salaries(CAPOLOGY_SEASON, league_name, "eur")
         if df is None or df.empty:
             return []
-        df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
-        wage_col = next(
-            (c for c in df.columns if "weekly" in c and "gross" in c),
-            next((c for c in df.columns if "wage" in c or "salary" in c), None),
+        # Capology returns a two-level column index, so a flattened name reads
+        # "('est._fixed_salary',_'gross_fixed_p/w\n(eur)')" rather than "wage".
+        # Matching those by equality against "player" found nothing and the
+        # whole league was discarded with "no wage/name column" — after the
+        # scrape had already succeeded. Match on substrings instead.
+        df.columns = [
+            str(c).lower().replace("\n", " ").replace(" ", "_") for c in df.columns
+        ]
+
+        def _find(*needles: str, exclude: tuple[str, ...] = ()) -> str | None:
+            for col in df.columns:
+                if any(x in col for x in exclude):
+                    continue
+                if all(n in col for n in needles):
+                    return col
+            return None
+
+        # Weekly gross is the figure the rest of the pipeline assumes; "p/w" is
+        # how Capology spells it. Take it ahead of any yearly column, and never
+        # fall back to one — a p/y figure silently read as weekly would put
+        # every player 52x over their real wage.
+        wage_col = (
+            _find("gross", "p/w")
+            or _find("weekly", "gross")
+            or _find("salary", "p/w")
+            or _find("wage", exclude=("p/y", "bonus", "total"))
         )
-        name_col = next((c for c in ("player", "name") if c in df.columns), None)
-        club_col = next((c for c in ("club", "team", "squad") if c in df.columns), None)
+        name_col = _find("player") or _find("name")
+        club_col = _find("club") or _find("team") or _find("squad")
         if not wage_col or not name_col:
             logger.warning(f"Capology {league_name}: no wage/name column in {list(df.columns)}")
             return []
@@ -552,19 +579,44 @@ def _scrape_capology_league(league_name: str) -> list[dict]:
         return []
 
 
+#: Attempts per league before giving up on it.
+#:
+#: Clearing Cloudflare is probabilistic, not deterministic — the same request
+#: that is served the interstitial once goes straight through on the next try.
+#: A single attempt per league therefore loses whole leagues to a coin flip,
+#: which is indistinguishable from the site being permanently blocked.
+_CAPOLOGY_ATTEMPTS = 3
+
+
 async def fetch_all_wages() -> list[dict]:
     """Fetch wages from Capology for all five leagues, sequentially and politely."""
     all_wages: list[dict] = []
     for display_name, capology_name in _CAPOLOGY_LEAGUES.items():
-        logger.info(f"Fetching Capology wages: {display_name}...")
-        try:
-            wages = await _run_in_thread(_scrape_capology_league, capology_name)
-            for w in wages:
-                w["league"] = display_name
-            all_wages.extend(wages)
-            await asyncio.sleep(2)
-        except Exception as e:
-            logger.warning(f"  {display_name} wages failed: {e}")
+        for attempt in range(1, _CAPOLOGY_ATTEMPTS + 1):
+            logger.info(
+                f"Fetching Capology wages: {display_name} "
+                f"(attempt {attempt}/{_CAPOLOGY_ATTEMPTS})..."
+            )
+            try:
+                wages = await _run_in_thread(_scrape_capology_league, capology_name)
+            except Exception as e:
+                logger.warning(f"  {display_name} wages failed: {e}")
+                wages = []
+            if wages:
+                for w in wages:
+                    w["league"] = display_name
+                all_wages.extend(wages)
+                logger.info(f"  {display_name}: {len(wages)} wage rows")
+                break
+            if attempt < _CAPOLOGY_ATTEMPTS:
+                # A slightly longer pause than the polite one; the challenge is
+                # more likely to pass once the previous session has aged out.
+                await asyncio.sleep(10)
+        else:
+            logger.warning(
+                f"  {display_name}: no wages after {_CAPOLOGY_ATTEMPTS} attempts"
+            )
+        await asyncio.sleep(2)
     logger.info(f"Total wage records: {len(all_wages)}")
     return all_wages
 

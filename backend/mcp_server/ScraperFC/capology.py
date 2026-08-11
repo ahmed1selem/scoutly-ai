@@ -24,13 +24,65 @@ class Capology():
     # ==============================================================================================
     def _webdriver_init(self) -> None:
         """ Initializes a new webdriver
+
+        Deliberately NOT headless. Capology sits behind Cloudflare, which serves
+        a "Just a moment... performing security verification" interstitial to
+        headless Chrome and never resolves it — the page has no table and no
+        season dropdown, which surfaced downstream as
+        ``'NoneType' object has no attribute 'find_all'``. A visible window
+        clears the same challenge in under six seconds.
+
+        This only runs in the offline cache build, never while serving a
+        request, so a browser window appearing is acceptable. Set
+        ``CAPOLOGY_HEADLESS=1`` to force the old behaviour.
         """
+        import os
+
         options = Options()
-        options.add_argument('--headless')
+        if os.getenv('CAPOLOGY_HEADLESS', '').strip() in ('1', 'true', 'True'):
+            options.add_argument('--headless=new')
         options.add_argument('--incognito')
-        prefs = {'profile.managed_default_content_settings.images': 2}  # don't load images
-        options.add_experimental_option('prefs', prefs)
+        # Cloudflare fingerprints the automation banner, so drop it.
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        options.add_experimental_option('useAutomationExtension', False)
+        # The original code set
+        #   prefs = {'profile.managed_default_content_settings.images': 2}
+        # to skip image downloads. That single setting is what Cloudflare
+        # fingerprints: measured A/B against the live site, a visible window
+        # passes the challenge with images on and is blocked with them off,
+        # while --incognito makes no difference either way. The bandwidth was
+        # not worth every wage build returning zero rows.
         self.driver = webdriver.Chrome(options=options)
+
+    # ==============================================================================================
+    def _soup_via_driver(self, url: str, wait_for: str = 'nav-submenu2', timeout: int = 40):
+        """ Fetch a Capology page through the browser rather than ``requests``.
+
+        The season-dropdown lookups used to call ``requests.get`` directly, which
+        Cloudflare answers with a 403 challenge page. Every wage build therefore
+        failed before it reached the part that already had a working driver.
+        """
+        import time
+
+        own_driver = not hasattr(self, 'driver') or self.driver is None
+        if own_driver:
+            self._webdriver_init()
+        try:
+            self.driver.get(url)
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+                if soup.find('select', {'id': wait_for}) is not None:
+                    return soup
+                time.sleep(2)
+            # Return whatever we have; the caller raises a clearer error than a
+            # bare None dereference.
+            return BeautifulSoup(self.driver.page_source, 'html.parser')
+        finally:
+            if own_driver:
+                self._webdriver_close()
+                self.driver = None
 
     # ==============================================================================================
     def _webdriver_close(self) -> None:
@@ -73,10 +125,15 @@ class Capology():
         if league not in comps.keys():
             raise InvalidLeagueException(league, 'Capology', list(comps.keys()))
 
-        soup = BeautifulSoup(requests.get(self.get_league_url(league)).content, 'html.parser')
-        year_dropdown_tags = soup.find('select', {'id': 'nav-submenu2'})\
-            .find_all('option', value=True)  # type: ignore
-        seasons = [x.text for x in year_dropdown_tags]
+        soup = self._soup_via_driver(self.get_league_url(league))
+        dropdown = soup.find('select', {'id': 'nav-submenu2'})
+        if dropdown is None:
+            raise RuntimeError(
+                f'Capology returned no season dropdown for {league}. This is '
+                'normally the Cloudflare interstitial — check that Chrome is '
+                'running with a visible window (CAPOLOGY_HEADLESS must not be set).'
+            )
+        seasons = [x.text for x in dropdown.find_all('option', value=True)]
 
         return seasons
 
@@ -99,9 +156,13 @@ class Capology():
         if year not in valid_seasons:
             raise InvalidYearException(year, league, valid_seasons)
 
-        soup = BeautifulSoup(requests.get(self.get_league_url(league)).content, 'html.parser')
-        year_dropdown_tags = soup.find('select', {'id': 'nav-submenu2'})\
-            .find_all('option', value=True)  # type: ignore
+        soup = self._soup_via_driver(self.get_league_url(league))
+        dropdown = soup.find('select', {'id': 'nav-submenu2'})
+        if dropdown is None:
+            raise RuntimeError(
+                f'Capology returned no season dropdown for {league} (Cloudflare).'
+            )
+        year_dropdown_tags = dropdown.find_all('option', value=True)
         value = [x['value'] for x in year_dropdown_tags if x.text == year][0]
 
         return f'https://capology.com{value}'
