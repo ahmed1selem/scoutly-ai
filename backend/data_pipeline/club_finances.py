@@ -63,6 +63,66 @@ _LEAGUES = [
     "France Ligue 1",
 ]
 
+#: Transfermarkt competition codes, so the club list can be fetched directly.
+#:
+#: ScraperFC's get_valid_seasons/get_club_links were doing this, but they route
+#: through botasaurus and fail in ways this module cannot recover from — a
+#: Ligue 1 run died inside the driver with "'NoneType' object has no attribute
+#: 'find'" and then paused waiting for a keypress, which is not something a data
+#: build should ever do. One page per league is little enough to fetch here.
+_COMP_CODES = {
+    "England Premier League": "GB1",
+    "Spain La Liga":          "ES1",
+    "Germany Bundesliga":     "L1",
+    "Italy Serie A":          "IT1",
+    "France Ligue 1":         "FR1",
+}
+
+
+def club_links_for(league: str) -> list[str]:
+    """Every club URL in a league for the target season, or [] if unreachable."""
+    import cloudscraper
+    from bs4 import BeautifulSoup
+
+    code = _COMP_CODES.get(league)
+    if not code:
+        return []
+    url = (
+        f"https://www.transfermarkt.us/-/startseite/wettbewerb/{code}"
+        f"/plus/?saison_id={TM_SAISON_ID}"
+    )
+    for attempt in range(1, 4):
+        scraper = cloudscraper.CloudScraper()
+        try:
+            _throttle()
+            resp = scraper.get(url, timeout=30)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.content, "html.parser")
+                seen: list[str] = []
+                for anchor in soup.find_all("a", href=True):
+                    match = _CLUB_ID.search(anchor["href"])
+                    if not match:
+                        continue
+                    href = anchor["href"]
+                    if "/startseite/" not in href:
+                        continue
+                    full = "https://www.transfermarkt.us" + href.split("?")[0]
+                    if full not in seen:
+                        seen.append(full)
+                if seen:
+                    return seen
+            logger.warning(
+                "%s: club listing attempt %d/3 -> HTTP %s",
+                league, attempt, resp.status_code,
+            )
+        except Exception as exc:
+            logger.warning("%s: club listing attempt %d/3 failed (%s)",
+                           league, attempt, str(exc)[:90])
+        finally:
+            scraper.close()
+        time.sleep(5 * attempt)
+    return []
+
 #: Seconds between Transfermarkt requests. The same politeness the player
 #: lookup uses; this is only ~96 pages, so it costs a few minutes.
 _MIN_GAP = 2.0
@@ -238,51 +298,35 @@ def scrape_club_transfers(club_url: str) -> dict:
     return {}
 
 
-def scrape_all_clubs() -> dict[str, dict]:
-    """Transfer records for every Big-5 club, keyed by Transfermarkt club name."""
-    from ScraperFC.transfermarkt import Transfermarkt
+def scrape_all_clubs(skip_slugs: set[str] | None = None) -> dict[str, dict]:
+    """
+    Transfer records for every Big-5 club, keyed by Transfermarkt slug.
 
-    tm = Transfermarkt()
+    `skip_slugs` lets a re-run fetch only what is still missing. Transfermarkt
+    drops connections unpredictably, so a run gets some subset of the clubs and
+    the honest way to reach all of them is to accumulate across runs rather than
+    to pretend one pass will do it.
+    """
+    skip_slugs = skip_slugs or set()
     out: dict[str, dict] = {}
     for league in _LEAGUES:
-        try:
-            seasons = tm.get_valid_seasons(league)
-        except Exception as exc:
-            logger.warning("%s: cannot list seasons (%s)", league, exc)
-            continue
-        # Keys look like "24/25"; fall back to whatever maps to our saison id.
-        key = next(
-            (k for k, v in seasons.items() if str(v) == TM_SAISON_ID),
-            None,
-        )
-        if key is None:
-            logger.warning("%s: no season maps to saison_id %s", league, TM_SAISON_ID)
-            continue
-        # Transfermarkt resets the connection on this listing often enough that a
-        # single attempt loses whole leagues — two of five on one run, three on
-        # another. It is one request per league, so retrying is cheap.
-        links = []
-        for attempt in range(1, 4):
-            try:
-                links = tm.get_club_links(key, league)
-                break
-            except Exception as exc:
-                logger.warning(
-                    "%s: cannot list clubs, attempt %d/3 (%s)", league, attempt, exc
-                )
-                time.sleep(5 * attempt)
+        links = club_links_for(league)
         if not links:
-            logger.warning("%s: giving up on the club listing", league)
+            logger.warning("%s: no club listing, skipping the league", league)
             continue
-        logger.info("%s: %d clubs", league, len(links))
+        logger.info("%s: %d clubs listed", league, len(links))
+        got = 0
         for link in links:
-            name = link.split("/startseite/")[0].rstrip("/").rsplit("/", 1)[-1]
+            slug = link.split("/startseite/")[0].rstrip("/").rsplit("/", 1)[-1]
+            if slug in skip_slugs:
+                continue
             record = scrape_club_transfers(link)
             if record:
                 record["league"] = league
-                record["tm_slug"] = name
-                out[name] = record
-        logger.info("  %s: %d clubs with a transfer record", league, len(out))
+                record["tm_slug"] = slug
+                out[slug] = record
+                got += 1
+        logger.info("  %s: %d new transfer records", league, got)
     return out
 
 
@@ -337,6 +381,24 @@ def build(wages_only: bool = False) -> int:
 
     clubs = payroll_by_club(conn)
     _add_medians(conn, clubs)
+
+    # Carry forward transfer records already stored, so a re-run adds to what we
+    # have rather than starting from nothing. Without this, a run that reached
+    # four leagues would overwrite a previous run that had reached the fifth.
+    existing_records: dict[str, dict] = {}
+    for club, payload in conn.execute(
+        "SELECT club, payload FROM club_finances WHERE season = ?", (SEASON_CODE,)
+    ):
+        stored = json.loads(payload)
+        if stored.get("transfer_expenditure_eur") is not None:
+            existing_records[club] = stored
+            if club in clubs:
+                clubs[club].update({
+                    k: v for k, v in stored.items()
+                    if k.startswith("transfer_") or k in ("tm_club_id", "tm_slug")
+                })
+    if existing_records:
+        logger.info("carried forward %d stored transfer records", len(existing_records))
     logger.info("payroll derived for %d clubs (no scraping)", len(clubs))
     if not clubs:
         logger.error(
@@ -347,8 +409,12 @@ def build(wages_only: bool = False) -> int:
     if not wages_only:
         from backend.data_pipeline.club_names import reconcile
 
-        transfers = scrape_all_clubs()
-        logger.info("transfer records scraped for %d clubs", len(transfers))
+        already = {v.get("tm_slug") for v in existing_records.values() if v.get("tm_slug")}
+        transfers = scrape_all_clubs(skip_slugs=already)
+        logger.info(
+            "transfer records: %d newly scraped, %d already held",
+            len(transfers), len(already),
+        )
 
         # Transfermarkt slugs carry the corporate prefix our squad names drop —
         # "fc-arsenal" against "Arsenal", "tottenham-hotspur" against
