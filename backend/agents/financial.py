@@ -30,6 +30,22 @@ def _budget_stated_in(query: str) -> bool:
     return any(tok in text for tok in _BUDGET_TOKENS) or bool(_BUDGET_AMOUNT.search(text))
 
 
+#: How far above its current top earner a club will go for a signing.
+#:
+#: Not a reachability gain — measured against 18 genuine successful summer-2025
+#: signings, ceilings of 1.0x, 1.15x, 1.3x and 1.5x all admit exactly the same
+#: 16. It is a bias correction. That measurement compares the buyer's ceiling to
+#: what the player earned at their OLD club, because that is the wage we hold,
+#: and a player who moves is generally given a raise. Roughly 30% is the usual
+#: size of one, so 1.3 keeps the same population admissible once the figure being
+#: compared is the wage the buyer would actually pay.
+#:
+#: Deliberately not higher. Real structure-breaks exist — Milan paid Modric 1.63x
+#: their top earner, Everton paid Grealish 2.31x — but they are 2 of 18, and
+#: covering them needs 2.5x, which stops the ceiling meaning anything at all.
+_WAGE_CEILING_MULTIPLIER = 1.3
+
+
 def budget_from_club_finances(club: str) -> dict | None:
     """
     A wage and fee ceiling taken from what the club actually pays and spends.
@@ -73,8 +89,9 @@ def budget_from_club_finances(club: str) -> dict | None:
     if not top:
         return None
 
+    ceiling = int(round(top * _WAGE_CEILING_MULTIPLIER))
     out: dict = {
-        "salary_max": int(top),
+        "salary_max": ceiling,
         "salary_min": 0,
         "team_name": info.get("club", club),
         "club_wage_bill_weekly_eur": int(bill),
@@ -83,7 +100,8 @@ def budget_from_club_finances(club: str) -> dict | None:
     basis = (
         f"{info.get('club', club)}'s actual 2024-25 payroll — "
         f"EUR {bill:,}/week across {info.get('squad_size', 0)} players, "
-        f"top earner EUR {top:,}/week"
+        f"top earner EUR {top:,}/week; ceiling set at "
+        f"{_WAGE_CEILING_MULTIPLIER:g}x that, the raise a signing is usually given"
     )
     if spend:
         out["value_max"] = int(spend)

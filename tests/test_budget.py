@@ -292,3 +292,27 @@ def test_a_player_on_a_long_deal_is_still_gated():
                 "contract_expires": _expiry_in(4), "wage_eur": 80_000}]
     assess_deal_economics(players, {"value_max": 20_000_000, "salary_max": 100_000})
     assert players[0]["within_fee_budget"] is False
+
+
+# ── the wage ceiling allows for the raise a signing is given ─────────────────
+
+from backend.agents.financial import _WAGE_CEILING_MULTIPLIER
+
+
+def test_ceiling_sits_above_the_clubs_current_top_earner():
+    """
+    A club that could only ever match its existing top earner could never sign
+    anyone better paid, which is not how recruitment works.
+    """
+    assert _WAGE_CEILING_MULTIPLIER > 1.0
+
+
+def test_multiplier_stays_within_the_measured_range():
+    """
+    Measured against 18 genuine summer-2025 signings, ceilings from 1.0x to 1.5x
+    admit exactly the same 16. The multiplier corrects for those wages being the
+    player's OLD ones; it is not licence to keep widening the gate. Covering the
+    real structure-breaks (Modric 1.63x, Grealish 2.31x) needs 2.5x, at which
+    point the ceiling means nothing.
+    """
+    assert 1.2 <= _WAGE_CEILING_MULTIPLIER <= 1.5

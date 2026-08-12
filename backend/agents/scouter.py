@@ -29,6 +29,20 @@ from ..utils.prompt_loader import PromptLoader
 #: Raising it trades measurable accuracy for a preference the data contradicts.
 _SAME_LEAGUE_BONUS = 1.0
 
+#: How far over the wage ceiling a candidate may sit and still be shown, flagged.
+#:
+#: The wage gate is the one place where absolute enforcement is wrong. A transfer
+#: fee is a single negotiated number the club either has or does not; a weekly
+#: wage is the most movable term in a contract, and the ceiling it is checked
+#: against is itself inferred from what the club currently pays rather than
+#: stated by anyone. Discarding a strong fit for being 3% over an inferred figure
+#: is false precision.
+#:
+#: 10% and no more. This is not a soft margin: beyond the band candidates are
+#: still excluded outright, and everyone inside it is marked `wage_stretch` so
+#: the report never presents them as comfortably affordable.
+_WAGE_CEILING_GRACE = 1.10
+
 
 # FBref abbreviates squad names; club profiles spell them out.
 _CLUB_WORD_ALIASES = {
@@ -581,17 +595,50 @@ class ScouterAgent(BaseAgent):
                 )
                 return {"players": [], "reason": "no candidate within the fee budget"}
 
-        # ── Wage ceiling: also a hard filter, and priced off the valuation ────
+        # ── Wage ceiling: a filter, with a narrow grace band ─────────────────
         # Deliberately after the valuations: a wage modelled from a player's market
         # value is far closer to reality than a league/minutes tier, which put every
         # Premier League starter near €55,000/wk when Gvardiol's reported range is
         # £200,000-250,000.
+        #
+        # Unlike the fee gate this one is not absolute. A fee is negotiated once
+        # and a club either has the cash or does not; a wage is the number most
+        # likely to move in talks, and the ceiling itself is inferred from what
+        # the club currently pays rather than stated by anyone. Losing a good fit
+        # to a few per cent on an inferred number is the wrong kind of precision.
+        #
+        # The band is narrow on purpose — this is not a soft margin. Anything
+        # beyond it is still excluded outright, and everything inside it is
+        # carried forward flagged, so the report can say a candidate is a stretch
+        # rather than quietly presenting them as comfortably affordable.
         await self.emit_progress(f"Pricing wages for {len(slate)} candidates...")
         for p in slate:
             await _resolve_wage(p, fallback_league=club_league)
 
-        affordable_wage = [p for p in slate if int(p.get("wage_eur", 0) or 0) <= salary_max]
+        grace_max = int(salary_max * _WAGE_CEILING_GRACE) if salary_max else 0
+        affordable_wage = [p for p in slate if int(p.get("wage_eur", 0) or 0) <= grace_max]
         priced_out_wage = [p for p in slate if p not in affordable_wage]
+
+        stretched = [
+            p for p in affordable_wage
+            if int(p.get("wage_eur", 0) or 0) > salary_max
+        ]
+        for p in stretched:
+            p["wage_stretch"] = True
+            p["wage_stretch_note"] = (
+                f"€{p.get('wage_eur', 0):,}/wk against a €{salary_max:,} ceiling — "
+                f"within the {(_WAGE_CEILING_GRACE - 1) * 100:.0f}% negotiating band, "
+                "not comfortably inside budget"
+            )
+        if stretched:
+            funnel["wage_stretch"] = len(stretched)
+            await self.emit_progress(
+                f"Kept {len(stretched)} candidate(s) just above the "
+                f"€{salary_max:,}/wk ceiling, flagged as a stretch: "
+                + ", ".join(
+                    f"{p['name']} (€{p.get('wage_eur', 0):,}/wk)" for p in stretched
+                )
+            )
         if priced_out_wage:
             funnel["over_wage_ceiling"] = len(priced_out_wage)
             funnel["lowest_excluded_wage_eur"] = min(
@@ -815,21 +862,38 @@ class ScouterAgent(BaseAgent):
             # gate has run. Without re-checking, a late number walks straight
             # past the ceiling — Matteo Politano reached a Bologna shortlist at
             # €124,615/wk against a €120,000 limit.
+            # Applied against the same grace band as the gate above, or this
+            # would silently undo it — a candidate admitted as a flagged stretch
+            # would be dropped here for the very reason they were flagged.
             if salary_max:
+                confirm_max = int(salary_max * _WAGE_CEILING_GRACE)
                 still_affordable = [
-                    p for p in players if int(p.get("wage_eur", 0) or 0) <= salary_max
+                    p for p in players if int(p.get("wage_eur", 0) or 0) <= confirm_max
                 ]
                 priced_out = [p for p in players if p not in still_affordable]
                 if priced_out:
                     await self.emit_progress(
                         f"Dropped {len(priced_out)} candidate(s) whose confirmed wage "
-                        f"exceeds €{salary_max:,}/wk: "
+                        f"exceeds €{confirm_max:,}/wk: "
                         + ", ".join(
                             f"{p['name']} (€{p.get('wage_eur', 0):,})" for p in priced_out
                         )
                     )
                 players = still_affordable
                 funnel["over_wage_on_confirmation"] = len(priced_out)
+
+                # A confirmed wage can also push someone who looked comfortable
+                # into the band, so the flag is recomputed rather than trusted.
+                for p in players:
+                    if int(p.get("wage_eur", 0) or 0) > salary_max:
+                        p["wage_stretch"] = True
+                        p["wage_stretch_note"] = (
+                            f"€{p.get('wage_eur', 0):,}/wk against a "
+                            f"€{salary_max:,} ceiling — within the negotiating band"
+                        )
+                    else:
+                        p.pop("wage_stretch", None)
+                        p.pop("wage_stretch_note", None)
 
         funnel["shortlisted"] = len(players)
         await self.emit_complete(f"Shortlisted {len(players)} verified players from database")

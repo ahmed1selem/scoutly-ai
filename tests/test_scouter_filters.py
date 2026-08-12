@@ -128,3 +128,45 @@ def test_dedupe_tolerates_missing_minutes():
     ]
     kept = _dedupe_split_seasons(cohort)
     assert len(kept) == 1 and kept[0]["squad"] == "Y"
+
+
+# ── the wage ceiling has a narrow grace band, the fee ceiling does not ────────
+# A fee is a single negotiated number the club either has or does not. A wage is
+# the most movable term in a contract, and the ceiling it is checked against is
+# inferred from what the club currently pays rather than stated by anyone, so
+# discarding a strong fit for being 3% over is false precision.
+
+from backend.agents.scouter import _WAGE_CEILING_GRACE
+
+
+def _apply_wage_gate(players, salary_max):
+    """Mirror of the scouter's wage gate, including the grace band."""
+    grace_max = int(salary_max * _WAGE_CEILING_GRACE)
+    kept = [p for p in players if int(p.get("wage_eur", 0) or 0) <= grace_max]
+    for p in kept:
+        p["wage_stretch"] = int(p.get("wage_eur", 0) or 0) > salary_max
+    return kept
+
+
+def test_a_candidate_just_over_the_ceiling_survives_but_is_flagged():
+    players = [{"name": "Just over", "wage_eur": 104_000}]
+    kept = _apply_wage_gate(players, 100_000)
+    assert len(kept) == 1
+    assert kept[0]["wage_stretch"] is True
+
+
+def test_a_candidate_inside_the_ceiling_is_not_flagged():
+    players = [{"name": "Comfortable", "wage_eur": 90_000}]
+    kept = _apply_wage_gate(players, 100_000)
+    assert kept[0]["wage_stretch"] is False
+
+
+def test_beyond_the_band_is_still_excluded_outright():
+    """The band is narrow on purpose — this is not a soft margin."""
+    players = [{"name": "Way over", "wage_eur": 200_000}]
+    assert _apply_wage_gate(players, 100_000) == []
+
+
+def test_the_band_is_no_wider_than_ten_percent():
+    """Guards against the grace quietly widening into a soft margin."""
+    assert 1.0 < _WAGE_CEILING_GRACE <= 1.10
