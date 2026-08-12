@@ -30,6 +30,72 @@ def _budget_stated_in(query: str) -> bool:
     return any(tok in text for tok in _BUDGET_TOKENS) or bool(_BUDGET_AMOUNT.search(text))
 
 
+def budget_from_club_finances(club: str) -> dict | None:
+    """
+    A wage and fee ceiling taken from what the club actually pays and spends.
+
+    Returns None when we hold nothing for this club, so the caller falls back to
+    the generic rules rather than inventing a figure.
+
+    The wage ceiling is the club's current top earner. That is the strongest
+    available evidence of what this club will pay one player, and it is directly
+    comparable — one player's wage against another's. Brentford's is EUR 81,686
+    a week against the generic default's EUR 300,000, which is the difference
+    between a shortlist they could sign and one they could not.
+
+    The fee ceiling is what the club spent across the 2024-25 window. It is an
+    upper bound rather than a target: a club cannot plausibly commit more to one
+    signing than it committed to every signing combined, and the basis string
+    says exactly that so nobody reads it as an allocated budget.
+    """
+    import sqlite3
+
+    from ..utils.config import settings
+
+    db = settings.ROOT_DIR / "data" / "fbref_cache.db"
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db), timeout=15)
+        try:
+            from ..data_pipeline.club_finances import load
+            info = load(conn, club)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    if not info:
+        return None
+
+    top = info.get("top_earner_weekly_eur") or 0
+    bill = info.get("weekly_wage_bill_eur") or 0
+    spend = info.get("transfer_expenditure_eur")
+    if not top:
+        return None
+
+    out: dict = {
+        "salary_max": int(top),
+        "salary_min": 0,
+        "team_name": info.get("club", club),
+        "club_wage_bill_weekly_eur": int(bill),
+        "club_top_earner_weekly_eur": int(top),
+    }
+    basis = (
+        f"{info.get('club', club)}'s actual 2024-25 payroll — "
+        f"EUR {bill:,}/week across {info.get('squad_size', 0)} players, "
+        f"top earner EUR {top:,}/week"
+    )
+    if spend:
+        out["value_max"] = int(spend)
+        out["club_transfer_spend_eur"] = int(spend)
+        basis += (
+            f"; fee ceiling is the EUR {spend / 1e6:.0f}M the club spent across "
+            "the 2024-25 window, which bounds one signing rather than budgeting it"
+        )
+    out["budget_basis"] = basis
+    return out
+
+
 def sanitise_budget(result: dict, query: str = "", target_club: str = "") -> dict:
     """
     Make a budget safe to scout against, and say what it is based on.
@@ -309,7 +375,39 @@ class FinancialAgent(BaseAgent):
             await self.emit_error("Failed to parse JSON from financial agent.", cleaned_text)
             raise
 
+        # Replace the model's reputation-scaled guess with the club's real
+        # numbers wherever the brief did not state a figure itself.
+        #
+        # Precedence is deliberate: an explicit instruction in the brief outranks
+        # history, because the user may be describing a budget the club has not
+        # had before. Absent that, measured payroll beats an LLM's sense of how
+        # big a club feels — every club used to draw on the same generic file.
+        real = budget_from_club_finances(target_club) if target_club else None
+        if real:
+            stated = _budget_stated_in(query)
+            for key in ("salary_max", "value_max", "salary_min"):
+                if key in real and not (stated and result.get(key)):
+                    result[key] = real[key]
+            for key in ("club_wage_bill_weekly_eur", "club_top_earner_weekly_eur",
+                        "club_transfer_spend_eur"):
+                if key in real:
+                    result[key] = real[key]
+            if not stated:
+                result["budget_basis_measured"] = real["budget_basis"]
+            await self.emit_progress(
+                f"Club finances on file for {real['team_name']}: "
+                f"wage bill EUR {real.get('club_wage_bill_weekly_eur', 0):,}/wk, "
+                f"top earner EUR {real.get('club_top_earner_weekly_eur', 0):,}/wk"
+                + (f", 2024-25 transfer spend EUR "
+                   f"{real['club_transfer_spend_eur'] / 1e6:.0f}M"
+                   if real.get("club_transfer_spend_eur") else "")
+            )
+
         result = sanitise_budget(result, query=query, target_club=target_club)
+        # sanitise_budget writes the generic wording; the measured basis is
+        # strictly better evidence, so it wins when we have it.
+        if result.pop("budget_basis_measured", None):
+            result["budget_basis"] = real["budget_basis"]
 
         await self.emit_complete(
             f"Budget for {result['team_name']}: €{result.get('salary_min', 0):,} – "

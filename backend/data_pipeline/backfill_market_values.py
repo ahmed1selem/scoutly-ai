@@ -121,7 +121,7 @@ def _player_id_from(payload: dict) -> str | None:
     return match.group(1) if match else None
 
 
-def backfill(resolve_missing: bool = False, limit: int | None = None) -> int:
+def backfill(limit: int | None = None) -> int:
     conn = sqlite3.connect(str(CACHE_DB), timeout=30)
     rows = conn.execute("SELECT name_key, payload FROM player_market_value").fetchall()
 
@@ -177,27 +177,84 @@ def backfill(resolve_missing: bool = False, limit: int | None = None) -> int:
         updated + unchanged, updated, unchanged, missing, AS_OF.date(),
     )
 
-    if resolve_missing:
-        logger.warning(
-            "--resolve is not implemented yet: it needs a Transfermarkt profile "
-            "search per player, which is the slow path. %d cohort players still "
-            "have no cached valuation at all.",
-            conn.execute(
-                "SELECT COUNT(*) FROM player_cohort WHERE season = '2425'"
-            ).fetchone()[0] - len(rows),
-        )
-
     conn.close()
     return 0
+
+
+def resolve_missing_players(limit: int | None = None) -> int:
+    """
+    Look up cohort players that have no cached valuation at all.
+
+    This is the slow half: each player needs a Transfermarkt search and at least
+    one profile fetch, both throttled, where the stamping above only needs one
+    JSON call against an id we already hold. Roughly four seconds a player.
+
+    Resumable by construction — `lookup` writes through to the same cache this
+    reads, so re-running skips everyone already resolved. Interrupt it freely.
+    """
+    sys.path.insert(0, str(ROOT / "backend" / "mcp_server"))
+    from transfermarkt_lookup import lookup, _fold  # noqa: E402
+
+    conn = sqlite3.connect(str(CACHE_DB), timeout=30)
+    have = {k for (k,) in conn.execute("SELECT name_key FROM player_market_value")}
+    cohort = conn.execute(
+        "SELECT name, squad, age FROM player_cohort WHERE season = '2425'"
+    ).fetchall()
+    conn.close()
+
+    todo = [
+        (name, squad, age) for name, squad, age in cohort
+        if _fold(f"{name}|{squad or ''}") not in have
+    ]
+    # Count before the cap. Deriving "already cached" from the truncated list
+    # made a --resolve-limit 8 run report 1,974 already cached out of 1,982,
+    # which reads as "there is almost nothing left to do" when in fact 1,574
+    # players had never been looked up.
+    outstanding = len(todo)
+    if limit:
+        todo = todo[:limit]
+
+    logger.info(
+        "%d cohort players, %d already cached, %d outstanding; "
+        "resolving %d this run (~%.0f min at %.1fs/req)",
+        len(cohort), len(cohort) - outstanding, outstanding, len(todo),
+        len(todo) * 4.0 / 60, _MIN_GAP,
+    )
+
+    found = missing = 0
+    for i, (name, squad, age) in enumerate(todo, start=1):
+        try:
+            result = lookup(name, squad or "", str(CACHE_DB), int(age or 0))
+            if result.get("found") and result.get("market_value_eur"):
+                found += 1
+            else:
+                missing += 1
+        except Exception as exc:
+            missing += 1
+            logger.debug("resolve %s failed: %s", name, exc)
+        if i % 50 == 0:
+            logger.info("  resolved %d/%d  (%d with a value, %d without)",
+                        i, len(todo), found, missing)
+
+    logger.info("resolve done: %d players gained a valuation, %d had none",
+                found, missing)
+    return found
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--resolve", action="store_true",
-                    help="also look up players with no cached valuation (slow)")
+                    help="first look up players with no cached valuation (slow)")
     ap.add_argument("--limit", type=int, help="only process the first N rows")
+    ap.add_argument("--resolve-limit", type=int,
+                    help="cap how many players --resolve looks up in this run")
     args = ap.parse_args()
-    return backfill(resolve_missing=args.resolve, limit=args.limit)
+
+    # Resolve first, then stamp: a player resolved in this run should get their
+    # season-aligned value in the same pass rather than needing a second one.
+    if args.resolve:
+        resolve_missing_players(limit=args.resolve_limit)
+    return backfill(limit=args.limit)
 
 
 if __name__ == "__main__":
