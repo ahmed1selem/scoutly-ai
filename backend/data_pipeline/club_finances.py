@@ -71,6 +71,50 @@ _last_request = 0.0
 _CLUB_ID = re.compile(r"/verein/(\d+)")
 _MULT = {"k": 1_000, "m": 1_000_000, "bn": 1_000_000_000, "b": 1_000_000_000}
 
+#: Transfermarkt is a German site and its URL slugs keep German exonyms even on
+#: the .us domain: AC Milan is "ac-mailand", Roma is "as-rom", Fiorentina is
+#: "ac-florenz". No folding rule bridges those, so they are spelled out.
+#:
+#: Order matters for Turin. Transfermarkt calls Torino "fc-turin" and Juventus
+#: "juventus-turin", so a bare turin -> torino rule would rename Juventus. The
+#: longer key is applied first and the two stay distinct.
+_TM_EXONYMS = [
+    ("juventus turin", "juventus"),
+    ("inter mailand", "inter"),
+    # Keep the "ac" so this reads as "ac milan" and matches the cache's spelling.
+    # Reducing it to a bare "milan" left it competing with Inter for the same
+    # canonical name and reconcile dropped the loser.
+    ("ac mailand", "ac milan"),
+    ("espanyol barcelona", "espanyol"),
+    ("real betis sevilla", "real betis"),
+    ("ac florenz", "fiorentina"),
+    ("as rom", "roma"),
+    ("fc turin", "torino"),
+    ("genua cfc", "genoa"),
+    ("ssc neapel", "napoli"),
+    ("ogc nizza", "nice"),
+    ("nizza", "nice"),
+    ("mailand", "milan"),
+    ("florenz", "fiorentina"),
+    ("neapel", "napoli"),
+    ("munchen", "munich"),
+    ("saragossa", "zaragoza"),
+    ("mailands", "milan"),
+    ("rom", "roma"),
+    ("strassburg", "strasbourg"),
+    ("fc paris saint germain", "psg"),
+    ("paris saint germain", "psg"),
+]
+
+
+def _deutsch(name: str) -> str:
+    """Rewrite Transfermarkt's German club spellings into the cache's."""
+    text = " ".join(str(name).replace("-", " ").lower().split())
+    for german, english in _TM_EXONYMS:
+        if german in text:
+            return text.replace(german, english)
+    return text
+
 
 def _throttle() -> None:
     global _last_request
@@ -170,21 +214,28 @@ def scrape_club_transfers(club_url: str) -> dict:
         f"https://www.transfermarkt.us/x/transfers/verein/{club_id.group(1)}"
         f"/saison_id/{TM_SAISON_ID}"
     )
-    scraper = cloudscraper.CloudScraper()
-    try:
-        _throttle()
-        resp = scraper.get(url, timeout=30)
-        if resp.status_code != 200:
-            logger.debug("club %s -> HTTP %s", club_id.group(1), resp.status_code)
-            return {}
-        record = _parse_transfer_record(resp.content)
-        record["tm_club_id"] = club_id.group(1)
-        return record
-    except Exception as exc:
-        logger.debug("club %s failed: %s", club_id.group(1), exc)
-        return {}
-    finally:
-        scraper.close()
+    # Transfermarkt resets connections under sustained scraping, and without a
+    # retry roughly half the club pages came back empty — 50 of 96 on a run
+    # where every league had listed correctly. Those clubs then fell back to the
+    # generic rule for no reason other than a dropped socket.
+    for attempt in range(1, 4):
+        scraper = cloudscraper.CloudScraper()
+        try:
+            _throttle()
+            resp = scraper.get(url, timeout=30)
+            if resp.status_code != 200:
+                logger.debug("club %s -> HTTP %s", club_id.group(1), resp.status_code)
+            else:
+                record = _parse_transfer_record(resp.content)
+                if record:
+                    record["tm_club_id"] = club_id.group(1)
+                    return record
+        except Exception as exc:
+            logger.debug("club %s attempt %d failed: %s", club_id.group(1), attempt, exc)
+        finally:
+            scraper.close()
+        time.sleep(2 * attempt)
+    return {}
 
 
 def scrape_all_clubs() -> dict[str, dict]:
@@ -207,10 +258,21 @@ def scrape_all_clubs() -> dict[str, dict]:
         if key is None:
             logger.warning("%s: no season maps to saison_id %s", league, TM_SAISON_ID)
             continue
-        try:
-            links = tm.get_club_links(key, league)
-        except Exception as exc:
-            logger.warning("%s: cannot list clubs (%s)", league, exc)
+        # Transfermarkt resets the connection on this listing often enough that a
+        # single attempt loses whole leagues — two of five on one run, three on
+        # another. It is one request per league, so retrying is cheap.
+        links = []
+        for attempt in range(1, 4):
+            try:
+                links = tm.get_club_links(key, league)
+                break
+            except Exception as exc:
+                logger.warning(
+                    "%s: cannot list clubs, attempt %d/3 (%s)", league, attempt, exc
+                )
+                time.sleep(5 * attempt)
+        if not links:
+            logger.warning("%s: giving up on the club listing", league)
             continue
         logger.info("%s: %d clubs", league, len(links))
         for link in links:
@@ -293,7 +355,7 @@ def build(wages_only: bool = False) -> int:
         # "Tottenham". Folding alone matched 3 of 96. reconcile already knows to
         # discard fc/afc/vfb and to bridge the pairs no rule can, so use it
         # rather than inventing a second, worse matcher here.
-        readable = {slug: slug.replace("-", " ") for slug in transfers}
+        readable = {slug: _deutsch(slug) for slug in transfers}
         mapping, unmatched, unclaimed = reconcile(
             list(readable.values()), list(clubs)
         )
