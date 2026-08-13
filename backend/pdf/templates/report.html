@@ -329,6 +329,7 @@
         {%- elif p.get('wage_eur') -%}
           {{ money(p.wage_eur) }}{% if p.get('wage_estimated', True) %}<span class="src"> est</span>{% endif %}
         {%- else -%}<span class="na">&mdash;</span>{%- endif -%}
+        {%- if p.get('wage_stretch') %} <span class="chip warn" title="{{ p.get('wage_stretch_note','') }}">stretch</span>{% endif -%}
       </td>
       <td class="r">
         {{ money(p.get('value_eur')) }}
@@ -346,6 +347,9 @@
   Wages marked <b>est</b> are not contract data: each is either modelled from
   league, minutes and age, or quoted from a published wage database.
   Values are Transfermarkt estimates.
+  A <b>stretch</b> chip means the wage sits above the club's inferred ceiling but
+  inside a 10% negotiating band — kept on the shortlist rather than dropped for
+  being marginally over an estimate, but not comfortably affordable.
 </p>
 
 {% set fn = selection_funnel or {} %}
@@ -377,6 +381,7 @@
     {% if fn.get('over_fee_ceiling') %}<b>{{ fn.over_fee_ceiling }} priced above the fee ceiling</b>{% if fn.get('cheapest_excluded_fee_eur') %} (cheapest excluded: {{ money(fn.cheapest_excluded_fee_eur) }}){% endif %};{% endif %}
     {% if fn.get('over_wage_ceiling') %}<b>{{ fn.over_wage_ceiling }} above the wage ceiling</b>{% if fn.get('lowest_excluded_wage_eur') %} (lowest excluded: {{ money(fn.lowest_excluded_wage_eur) }}/wk){% endif %};{% endif %}
     {% if fn.get('over_wage_on_confirmation') %}{{ fn.over_wage_on_confirmation }} dropped once a confirmed wage exceeded the ceiling;{% endif %}
+    {% if fn.get('wage_stretch') %}{{ fn.wage_stretch }} kept just above the ceiling as a flagged stretch rather than dropped outright;{% endif %}
     leaving {{ shortlisted }}.
     Raising whichever ceiling did most of the cutting is the fastest way to widen
     the field.
