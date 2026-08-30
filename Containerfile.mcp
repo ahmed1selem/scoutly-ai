@@ -10,7 +10,7 @@ WORKDIR /app
 
 # ── Python deps ───────────────────────────────────────────────────────────────
 RUN pip install --no-cache-dir \
-    "mcp[cli]>=1.0.0" \
+    "mcp[cli]>=1.0.0,<2.0.0" \
     "fastmcp>=0.1.0" \
     aiosqlite==0.20.0 \
     python-dotenv \

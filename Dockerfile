@@ -57,7 +57,11 @@ RUN pip install --no-cache-dir \
     "weasyprint>=60.0" \
     "jinja2>=3.1" \
     "httpx>=0.27.0" \
-    "mcp>=1.0.0" \
+    # mcp 2.x renamed FastMCP to MCPServer with a different import path.
+    # Unpinned, this broke the MCP server outright on a fresh build — it
+    # exited on import with no health check anywhere noticing, and the
+    # container ran uvicorn alone against an empty cohort for every request.
+    "mcp>=1.0.0,<2.0.0" \
     "langsmith>=0.1.0" \
     aiosqlite \
     requests \

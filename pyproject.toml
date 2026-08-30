@@ -62,7 +62,13 @@ dependencies = [
     "httpx>=0.27.0",
     
     # ── MCP ──
-    "mcp>=1.0.0",
+    # mcp 2.x renamed FastMCP to MCPServer with a different import path and
+    # broke backend/mcp_server/server.py outright on a fresh install — the
+    # deployed container silently lost its MCP server to this on a rebuild
+    # with no error surfaced anywhere except the process log, and every real
+    # scouting request came back with an empty cohort. Upper-bounded until the
+    # server is migrated to the v2 API.
+    "mcp>=1.0.0,<2.0.0",
 
     # ── DeepAgents transitive deps (deepagents is vendored in /vendor) ──
     "langchain-anthropic>=1.4.7",
