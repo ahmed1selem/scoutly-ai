@@ -27,10 +27,20 @@ if (-not (Test-Path $FLY)) {
     exit 1
 }
 
-# -- 2. Login (opens browser) ---------------------------------------------------
-Write-Host "Step 1/4 - Logging in to Fly.io (browser will open)..."
-& $FLY auth login
-if ($LASTEXITCODE -ne 0) { Write-Host "Login failed." -ForegroundColor Red; exit 1 }
+# -- 2. Login (skipped if a session already exists) -----------------------------
+# `fly auth login` always opens a fresh browser tab regardless of whether a
+# valid session exists, so running this unconditionally forces a second login
+# on every re-run — including right after the user just logged in by hand.
+# `whoami` is silent and near-instant, so checking first costs nothing.
+Write-Host "Step 1/4 - Checking Fly.io login..."
+$who = & $FLY auth whoami 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  already logged in as $who" -ForegroundColor Green
+} else {
+    Write-Host "  not logged in - opening browser..."
+    & $FLY auth login
+    if ($LASTEXITCODE -ne 0) { Write-Host "Login failed." -ForegroundColor Red; exit 1 }
+}
 
 # -- 3. Create app (first time) ------------------------------------------------
 Write-Host ""
