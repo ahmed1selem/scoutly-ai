@@ -34,7 +34,23 @@ _UA = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 _TIMEOUT = 20
-_CACHE_TTL_DAYS = 14          # market values move slowly; contracts even more so
+# A cached row holds a *season-aligned* valuation — the player's value as it
+# stood in mid-2025, pinned deliberately so a 2024-25 season is never priced
+# with today's money. That is a historical fact; it does not go stale, and
+# expiring it is wrong on its own terms.
+#
+# The old 14-day TTL was invisible in development, where an expired row simply
+# triggers a re-fetch, but broke the deployed app completely: Transfermarkt
+# answers a datacenter IP with HTTP 202 (a bot challenge), so every expired
+# lookup fell through to a network call that could never succeed and returned
+# None. All 1,935 cached valuations had aged past 14 days, so every shortlist
+# came back with fee_eur=None and "0 of N candidates sit inside both ceilings"
+# — the data was present and correct in the container the whole time.
+#
+# Ten years keeps the row effectively permanent while leaving the mechanism in
+# place. Refreshing valuations is the backfill's job
+# (backend/data_pipeline/backfill_market_values.py), not a TTL's.
+_CACHE_TTL_DAYS = 3650
 _MIN_REQUEST_GAP = 1.5        # seconds between requests, to stay polite
 _last_request_at = 0.0
 
