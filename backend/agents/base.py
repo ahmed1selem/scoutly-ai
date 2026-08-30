@@ -110,6 +110,7 @@ class BaseAgent(ABC):
             response_format={"type": "json_object"},
             temperature=temperature,
             max_tokens=max_tokens,
+            **settings.GROQ_EXTRA_CHAT_KWARGS,
         )
         content = response.choices[0].message.content or ""
         await self.emit_progress(

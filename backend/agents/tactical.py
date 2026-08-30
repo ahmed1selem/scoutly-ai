@@ -187,7 +187,8 @@ class TacticalAgent(BaseAgent):
             "Do not include markdown code blocks or extra text."
         )
 
-        response_text = await self._run_json_completion(task_prompt, max_tokens=3000)
+        # Same reasoning-overhead margin as financial.py — see the comment there.
+        response_text = await self._run_json_completion(task_prompt, max_tokens=4000)
         cleaned_text  = response_text.replace("```json", "").replace("```", "").strip()
 
         try:

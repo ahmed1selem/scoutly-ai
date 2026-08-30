@@ -328,6 +328,12 @@ OUTPUT JSON SCHEMA:
             ],
             response_format={"type": "json_object"},
             temperature=0.0,
+            # No cap previously — harmless with a non-reasoning model but
+            # unbounded cost/latency risk now that Groq's default is a
+            # reasoning model. This is a small classification task; 600 is
+            # generous margin over what the four possible intents need.
+            max_tokens=600,
+            **settings.GROQ_EXTRA_CHAT_KWARGS,
         )
         router_data = json.loads(router_response.choices[0].message.content)
     except Exception as exc:

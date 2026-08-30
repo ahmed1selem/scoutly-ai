@@ -382,7 +382,11 @@ class FinancialAgent(BaseAgent):
         )
         task_prompt += "\n\nCRITICAL: You must output ONLY valid JSON format in your final response containing the salary parameters. Do not include markdown codeblocks or other text in your final message."
 
-        response_text = await self._run_json_completion(task_prompt, max_tokens=800)
+        # 800 was sized for a non-reasoning model and hit max_completion_tokens
+        # with no valid JSON at all once Groq's default model became a
+        # reasoning one — reasoning_effort=low (set provider-wide) shrinks the
+        # overhead but does not eliminate it. 1600 leaves real margin.
+        response_text = await self._run_json_completion(task_prompt, max_tokens=1600)
 
 
         # Clean the response to ensure it's valid JSON

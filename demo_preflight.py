@@ -69,7 +69,7 @@ def check_config() -> None:
     load_dotenv(ROOT / ".env")
 
     provider = (os.getenv("LLM_PROVIDER") or "groq").strip().lower()
-    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
     ok(f"provider={provider}, model={model}")
 
     if not os.getenv("TAVILY_API_KEY"):
@@ -126,11 +126,16 @@ def check_data() -> None:
 
 def check_budget() -> None:
     """
-    The single most likely way the demo dies.
+    The single most likely ways the demo dies: a spent daily budget, or a model
+    Groq has quietly removed from its catalog.
 
-    Each key carries its own daily budget, so a spent key is survivable and an
-    entirely spent set is not: the pipeline aborts inside the first agent and
-    the only visible symptom is an empty shortlist.
+    Groq decommissioned llama-3.3-70b-versatile entirely with no warning
+    anywhere in this repo's history — every agent call started returning
+    404 model_not_found. The check that used to run here classified "not a
+    429" as "key is fine," so it reported 5/5 keys healthy while every single
+    one was actually failing outright. A demo would have hit that wall live
+    with no warning from this script. Every outcome is now classified
+    explicitly rather than inferred from what it is not.
     """
     print("\nToken budget")
     raw = os.getenv("GROQ_API_KEYS") or os.getenv("GROQ_API_KEY", "")
@@ -140,12 +145,13 @@ def check_budget() -> None:
              "Set GROQ_API_KEYS (comma-separated to rotate).")
         return
 
-    from openai import AsyncOpenAI
+    from openai import APIStatusError, AsyncOpenAI
 
     base = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
-    async def probe(key: str) -> bool:
+    async def probe(key: str) -> tuple[str, str]:
+        """(status, detail). status is one of: ok, rate_limited, model_missing, other."""
         client = AsyncOpenAI(api_key=key, base_url=base, max_retries=0)
         try:
             await client.chat.completions.create(
@@ -153,12 +159,19 @@ def check_budget() -> None:
                 messages=[{"role": "user", "content": "hi"}],
                 max_tokens=1,
             )
-            return True
+            return "ok", ""
+        except APIStatusError as exc:
+            code = getattr(exc, "status_code", None)
+            body = str(getattr(exc, "message", None) or exc)
+            if code == 404 or "model_not_found" in body or "does not exist" in body:
+                return "model_missing", body[:200]
+            if code == 429 or "rate_limit" in body.lower():
+                return "rate_limited", body[:200]
+            return "other", f"HTTP {code}: {body[:150]}"
         except Exception as exc:
-            text = str(exc)
-            return not ("429" in text or "rate_limit" in text)
+            return "other", f"{type(exc).__name__}: {str(exc)[:150]}"
 
-    async def probe_all() -> list[bool]:
+    async def probe_all() -> list[tuple[str, str]]:
         # wait_for has to wrap the gather from *inside* a running loop; building
         # the awaitable outside one raises before a single probe is sent.
         return await asyncio.wait_for(
@@ -171,7 +184,27 @@ def check_budget() -> None:
         warn(f"could not reach the provider ({type(exc).__name__}) - check the network")
         return
 
-    live = sum(1 for r in results if r)
+    live = sum(1 for s, _ in results if s == "ok")
+    missing_model = [d for s, d in results if s == "model_missing"]
+    other = [d for s, d in results if s == "other"]
+
+    # A missing model affects every key identically — it is a config problem,
+    # not a per-key one, and it is fatal no matter how much budget any key has
+    # left. Checked before the "some keys are fine" branches below, or it
+    # reads as partial capacity instead of a total outage.
+    if missing_model:
+        fail(f"GROQ_MODEL='{model}' does not exist on Groq ({len(missing_model)} of "
+             f"{len(keys)} keys confirm it)",
+             f"Groq removed it from their catalog. Check "
+             f"https://console.groq.com/docs/models and update GROQ_MODEL in .env "
+             f"— {missing_model[0]}")
+        return
+    if other and not live:
+        fail(f"all {len(keys)} keys failed for an unexpected reason", other[0])
+        return
+    if other:
+        warn(f"{len(other)} key(s) failed unexpectedly: {other[0]}")
+
     briefs = live * TOKENS_PER_KEY // TOKENS_PER_BRIEF
     if live == 0:
         fail(f"all {len(keys)} keys are rate-limited",

@@ -344,7 +344,14 @@ class ScouterAgent(BaseAgent):
                 )}],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                max_tokens=48,
+                # 48 was enough for a non-reasoning model to emit four short
+                # fields and nothing else. Groq's current default model spends
+                # tokens on internal reasoning before writing the answer — 48
+                # is smaller than that overhead alone, so every call here was
+                # failing outright, not just running thin. reasoning_effort=low
+                # (below) cuts the overhead; this is the margin on top of it.
+                max_tokens=300,
+                **settings.GROQ_EXTRA_CHAT_KWARGS,
             )
             parsed = json.loads(pos_resp.choices[0].message.content)
             target_position = parsed.get("position") or "FW"
@@ -716,7 +723,8 @@ class ScouterAgent(BaseAgent):
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.3,
-                max_tokens=1500,
+                max_tokens=2200,  # margin for reasoning overhead — see pos_resp above
+                **settings.GROQ_EXTRA_CHAT_KWARGS,
             )
             result    = json.loads(sel_resp.choices[0].message.content)
             selected  = result.get("players", [])
@@ -813,7 +821,8 @@ class ScouterAgent(BaseAgent):
                         )}],
                         response_format={"type": "json_object"},
                         temperature=0.0,
-                        max_tokens=160,
+                        max_tokens=350,  # margin for reasoning overhead — see pos_resp above
+                        **settings.GROQ_EXTRA_CHAT_KWARGS,
                     )
                     fin = json.loads(extract_resp.choices[0].message.content)
                     _apply_web_wage(p, fin)

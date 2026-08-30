@@ -27,7 +27,16 @@ class Settings:
 
     # ── Groq (OpenAI-compatible) ────────────────────────────────────────────────
     GROQ_BASE_URL: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-    GROQ_MODEL: str    = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    # Groq removed llama-3.3-70b-versatile from its catalog entirely — a
+    # 404 model_not_found, not a slow deprecation window — which broke every
+    # agent call with no warning. gpt-oss-120b is Groq's current largest
+    # general-purpose chat model with response_format=json_object support
+    # (verified directly against /v1/models and a live JSON-mode call on
+    # 2026-08-31; qwen3.6-27b failed JSON validation on the same test, so it
+    # is not a safe fallback). Re-check https://console.groq.com/docs/models
+    # if this 404s again — Groq's catalog has already changed once with no
+    # notice in this repo's history and there is no reason to expect it won't.
+    GROQ_MODEL: str    = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
     @property
     def GROQ_API_KEYS(self) -> list[str]:
@@ -51,6 +60,27 @@ class Settings:
         "AZURE_OPENAI_ENDPOINT",
         "https://your-resource.services.ai.azure.com/openai/v1",
     )
+
+    @property
+    def GROQ_EXTRA_CHAT_KWARGS(self) -> dict:
+        """
+        Extra kwargs to spread into every Groq chat completion.
+
+        Groq's current default model (openai/gpt-oss-120b, since Groq removed
+        llama-3.3-70b-versatile from its catalog entirely) is a reasoning model:
+        it spends a variable share of max_tokens on internal chain-of-thought
+        before writing the actual answer. A financial_analyze call that used to
+        comfortably fit in 800 tokens hit max_completion_tokens with no valid
+        JSON produced at all. reasoning_effort="low" cuts that overhead sharply
+        — 55 tokens against 161 at the default effort on an equivalent prompt,
+        confirmed directly against the API — with no loss of answer quality;
+        "high" measured *worse*, producing an implausible EUR 5.5M/week salary
+        from the same prompt. Scoped to Groq only: Azure's chat models do not
+        accept this parameter and would likely reject the request outright.
+        """
+        if self.LLM_PROVIDER == "groq":
+            return {"reasoning_effort": "low"}
+        return {}
 
     @property
     def AZURE_OPENAI_ENDPOINT(self) -> str:
